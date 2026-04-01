@@ -1059,18 +1059,14 @@ def expand_report_if_too_short(
         return report
 
     source_constraint = (
-        "- 資料にない企業名・ブランド名・事例は追加しない
-"
-        "- 自分の一般知識で補った具体例は禁止
-"
-        if strict_source_only else
-        "- 資料外例は原則避け、資料にある概念や事例を優先する
-"
+        "- 資料にない企業名・ブランド名・事例は追加しない\n"
+        "- 自分の一般知識で補った具体例は禁止\n"
+        if strict_source_only
+        else "- 資料外例は原則避け、資料にある概念や事例を優先する\n"
     )
 
-    evidence_text = "
+    evidence_text = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:6])
 
-".join(render_evidence_brief(ev) for ev in evidences[:6])
     prompt = f"""
 以下のレポート本文は、目標字数に対して短すぎます。
 本文全体を書き直し、字数不足を補ってください。本文のみ出力してください。
@@ -1111,7 +1107,6 @@ def expand_report_if_too_short(
         temperature=0.28,
         max_output_tokens=3200,
     ))
-
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int) -> str:
     if length_band_status(report, target_length) != "long":
