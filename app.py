@@ -1065,7 +1065,7 @@ source_constraint = (
     else "- 資料外例は原則避け、資料にある概念や事例を優先する\n"
 )
 
-    evidence_text = "
+evidence_text = "
 
 ".join(render_evidence_brief(ev) for ev in evidences[:6])
     prompt = f"""
