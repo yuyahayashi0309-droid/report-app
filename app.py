@@ -1059,13 +1059,18 @@ def expand_report_if_too_short(
         return report
 
     source_constraint = (
-        "- 資料にない企業名・ブランド名・事例は追加しない\n"
-        "- 自分の一般知識で補った具体例は禁止\n"
-        if strict_source_only
-        else "- 資料外例は原則避け、資料にある概念や事例を優先する\n"
+        "- 資料にない企業名・ブランド名・事例は追加しない
+"
+        "- 自分の一般知識で補った具体例は禁止
+"
+        if strict_source_only else
+        "- 資料外例は原則避け、資料にある概念や事例を優先する
+"
     )
 
-    evidence_text = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:6])
+    evidence_text = "
+
+".join(render_evidence_brief(ev) for ev in evidences[:6])
     prompt = f"""
 以下のレポート本文は、目標字数に対して短すぎます。
 本文全体を書き直し、字数不足を補ってください。本文のみ出力してください。
@@ -1354,8 +1359,24 @@ with left:
     )
     theme = st.text_area(
         "課題文 / テーマ",
-        placeholder="例：マーケティングとブランド戦略について、講義資料の内容を関連づけて論じなさい。",
+        placeholder="例：科学技術の発展がマーケティング・チャネル設計に与えた影響を、ディスインターメディエーションと電子市場を中心に論じなさい。",
         height=130,
+    )
+    focus_points = st.text_input(
+        "特に重視したい観点（任意）",
+        placeholder="例：チャネル設計、ディスインターメディエーション、チャネル・コンフリクト",
+    )
+    preferred_concepts = st.text_input(
+        "扱いたい概念（任意）",
+        placeholder="例：電子市場、垂直型システム、EDI、リテール・リンク",
+    )
+    excluded_topics = st.text_input(
+        "除外したい話題（任意）",
+        placeholder="例：ブランド価値、感情分析、新製品開発",
+    )
+    source_scope = st.text_input(
+        "使う範囲・章指定（任意）",
+        placeholder="例：7章中心、7マーケティング・チャネル p.11〜38 を優先",
     )
     target_length = st.number_input(
         "目標文字数",
@@ -1389,6 +1410,37 @@ fast_clicked = run_fast_button.button("高速で生成", use_container_width=Tru
 high_clicked = run_high_button.button("ハイエンドで生成", use_container_width=True, type="primary")
 
 # ============================================================
+# Input shaping / scope warning
+# ============================================================
+def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
+    parts = [f"課題文: {theme.strip()}"]
+    if focus_points.strip():
+        parts.append(f"重視観点: {focus_points.strip()}")
+    if preferred_concepts.strip():
+        parts.append(f"扱いたい概念: {preferred_concepts.strip()}")
+    if excluded_topics.strip():
+        parts.append(f"除外したい話題: {excluded_topics.strip()}")
+    if source_scope.strip():
+        parts.append(f"優先範囲: {source_scope.strip()}")
+    return "
+".join(parts)
+
+
+def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> bool:
+    broad_markers = ["マーケティング", "ブランド", "消費者", "科学技術", "戦略", "流通", "企業", "影響", "論じ", "重要性", "発展"]
+    score = sum(1 for m in broad_markers if m in theme)
+    helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
+    return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
+
+
+if broad_theme_warning(theme, focus_points, preferred_concepts, excluded_topics, source_scope):
+    st.info(
+        "この課題は範囲が広いため、出力が総花的になる可能性があります。"
+        "『特に重視したい観点』『扱いたい概念』『除外したい話題』『使う範囲』を入れると精度が上がります。"
+    )
+
+
+# ============================================================
 # Main run
 # ============================================================
 def validate_inputs(api_key: str, uploaded_files, theme: str, confirm_generate: bool):
@@ -1408,11 +1460,14 @@ def validate_inputs(api_key: str, uploaded_files, theme: str, confirm_generate: 
 if fast_clicked or high_clicked:
     validate_inputs(api_key, uploaded_files, theme, confirm_generate)
     client = get_client(api_key)
+    user_guidance = build_user_guidance(theme, focus_points, preferred_concepts, excluded_topics, source_scope)
+    effective_theme = user_guidance if user_guidance.strip() else theme
     try:
         if fast_clicked:
-            result = run_fast_pipeline(client, model_name, theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
+            result = run_fast_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
         else:
-            result = run_high_pipeline(client, model_name, theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
+            result = run_high_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
+        result["effective_theme"] = effective_theme
         st.session_state.result = result
         st.session_state.theme_snapshot = theme
         st.success("生成が完了しました。")
@@ -1471,6 +1526,8 @@ if st.session_state.result:
 
     with tab3:
         st.subheader("論点設計")
+        if result.get("effective_theme"):
+            st.text_area("実際に使ったテーマ解釈", result.get("effective_theme", ""), height=140)
         st.text_area("argument_map", result.get("argument_map", ""), height=260)
         if result.get("blueprint"):
             st.write("節設計")
