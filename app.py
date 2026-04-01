@@ -10,39 +10,18 @@ import fitz
 import streamlit as st
 from openai import OpenAI
 
-# ============================================================
-# ReportFlow Pro - Dual Mode Final
-# Fast mode: practical speed, low API usage, still source-aware
-# High-end mode: stronger source constraints, stricter quality gates
-# ============================================================
-
 st.set_page_config(page_title="ReportFlow Pro", page_icon="📝", layout="wide")
 
 st.markdown(
     """
     <style>
-    .block-container {
-        max-width: 1180px;
-        padding-top: 1.2rem;
-        padding-bottom: 4rem;
-    }
+    .block-container { max-width: 1180px; padding-top: 1.2rem; padding-bottom: 4rem; }
     .hero {
         padding: 1.25rem 1.35rem;
         border: 1px solid rgba(120,120,120,0.16);
         border-radius: 22px;
         margin-bottom: 1rem;
         background: linear-gradient(180deg, rgba(250,250,250,0.045), rgba(250,250,250,0.015));
-    }
-    .card {
-        padding: 1rem 1.05rem;
-        border: 1px solid rgba(120,120,120,0.16);
-        border-radius: 18px;
-        background: rgba(250,250,250,0.02);
-        height: 100%;
-    }
-    .small-muted {
-        font-size: 0.92rem;
-        opacity: 0.78;
     }
     .pill {
         display: inline-block;
@@ -53,16 +32,6 @@ st.markdown(
         margin-top: 0.35rem;
         font-size: 0.84rem;
     }
-    div[data-testid="stButton"] > button,
-    div[data-testid="stDownloadButton"] > button {
-        border-radius: 14px;
-        min-height: 2.9rem;
-        font-weight: 650;
-    }
-    .tiny {
-        font-size: 0.85rem;
-        opacity: 0.82;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -72,8 +41,7 @@ st.markdown(
     """
     <div class="hero">
         <h1 style="margin-bottom:0.18rem;">📝 ReportFlow Pro</h1>
-        <div class="small-muted">
-            複数PDFを読み込み、課題文に応じて資料固有の概念を活かしたレポート本文を生成します。
+        <div style="opacity:0.8;">
             高速モードは待てる速度、ハイエンドモードは資料密着の提出前仕上げを狙います。
         </div>
         <div style="margin-top:0.55rem;">
@@ -81,16 +49,13 @@ st.markdown(
             <span class="pill">ハイエンドモード</span>
             <span class="pill">意味チャンク抽出</span>
             <span class="pill">根拠可視化</span>
-            <span class="pill">資料外例チェック</span>
+            <span class="pill">字数必達</span>
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ============================================================
-# Constants
-# ============================================================
 FAST_DEFAULT_MODEL = "gpt-4.1-mini"
 HIGH_DEFAULT_MODEL = "gpt-4.1-mini"
 
@@ -125,9 +90,7 @@ HIGH_SETTINGS = {
     "min_source_terms": 5,
 }
 
-# ============================================================
-# Dataclasses
-# ============================================================
+
 @dataclass
 class Chunk:
     chunk_id: str
@@ -166,9 +129,7 @@ class Evidence:
     reason: str
     duplicate_group: int = -1
 
-# ============================================================
-# OpenAI helpers
-# ============================================================
+
 def get_api_key() -> str:
     secrets_key = st.secrets.get("OPENAI_API_KEY", None)
     api_key_input = st.sidebar.text_input("OpenAI APIキー（ローカル確認用）", type="password")
@@ -179,14 +140,7 @@ def get_client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-def call_json(
-    client: OpenAI,
-    model: str,
-    system: str,
-    user_prompt: str,
-    temperature: float = 0.2,
-    max_output_tokens: int = 1800,
-) -> Dict[str, Any]:
+def call_json(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.2, max_output_tokens: int = 1800) -> Dict[str, Any]:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -200,14 +154,7 @@ def call_json(
     return json.loads(response.output_text.strip())
 
 
-def call_text(
-    client: OpenAI,
-    model: str,
-    system: str,
-    user_prompt: str,
-    temperature: float = 0.35,
-    max_output_tokens: int = 2600,
-) -> str:
+def call_text(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.35, max_output_tokens: int = 2600) -> str:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -219,9 +166,7 @@ def call_text(
     )
     return response.output_text.strip()
 
-# ============================================================
-# Utilities
-# ============================================================
+
 def normalize_space(text: str) -> str:
     text = html.unescape(text or "")
     text = text.replace("\u3000", " ")
@@ -235,21 +180,15 @@ def clean_text(text: str) -> str:
         return ""
     for bad in ["###", "##", "#", "* ", "- "]:
         text = text.replace(bad, "")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def safe_json_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
     if isinstance(value, str):
-        parts = re.split(r"[,、/\n]", value)
-        return [p.strip() for p in parts if p.strip()]
+        return [p.strip() for p in re.split(r"[,、/\n]", value) if p.strip()]
     return []
-
-
-def approx_char_delta(text: str, target: int) -> int:
-    return abs(len(text) - target)
 
 
 def lexical_terms(text: str, top_k: int = 12) -> List[str]:
@@ -257,17 +196,17 @@ def lexical_terms(text: str, top_k: int = 12) -> List[str]:
     cands = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}|[一-龥ァ-ヶー]{2,}", text)
     cands = [c for c in cands if c not in STOPWORDS_JA and not re.fullmatch(r"\d+", c)]
     freq = Counter(cands)
-    unique = []
     seen = set()
+    out = []
     for word, _ in freq.most_common(top_k * 4):
         lw = word.lower()
         if lw in seen:
             continue
         seen.add(lw)
-        unique.append(word)
-        if len(unique) >= top_k:
+        out.append(word)
+        if len(out) >= top_k:
             break
-    return unique
+    return out
 
 
 def specificity_hint_score(text: str) -> float:
@@ -327,11 +266,7 @@ def length_band_status(text: str, target_length: int) -> str:
 
 
 def build_length_targets(target_length: int) -> Dict[str, int]:
-    return {
-        "min": int(target_length * 0.90),
-        "ideal": target_length,
-        "max": int(target_length * 1.08),
-    }
+    return {"min": int(target_length * 0.90), "ideal": target_length, "max": int(target_length * 1.08)}
 
 
 def important_terms_from_evidences(evidences: List[Evidence], top_k: int = 14) -> List[str]:
@@ -350,20 +285,12 @@ def count_abstract_term_hits(text: str) -> int:
 
 
 def detect_external_example_risk(text: str, evidences: List[Evidence]) -> int:
-    allowed_text = " ".join([
-        ev.topic + " " + ev.proposition + " " + ev.evidence + " " + ev.example + " " + " ".join(ev.terminology)
-        for ev in evidences
-    ])
+    allowed_text = " ".join(ev.topic + " " + ev.proposition + " " + ev.evidence + " " + ev.example + " " + " ".join(ev.terminology) for ev in evidences)
     names = re.findall(r"\b[A-Z][A-Za-z&\-]{2,}(?:\s+[A-Z][A-Za-z&\-]{2,})*\b", text)
-    jp_names = re.findall(r"[一-龥ァ-ヶー]{2,}(?:社|ブランド|グループ|ストア|銀行|自動車)?", text)
     risk = 0
     for n in names[:20]:
         if n not in allowed_text and len(n) >= 3:
             risk += 1
-    # very rough JP-side risk limiter
-    for n in jp_names[:20]:
-        if n not in allowed_text and len(n) >= 3 and n not in ABSTRACT_TERMS:
-            risk += 0
     if risk == 0:
         return 0
     if risk <= 2:
@@ -372,20 +299,63 @@ def detect_external_example_risk(text: str, evidences: List[Evidence]) -> int:
         return 2
     return 3
 
-# ============================================================
-# PDF extraction / chunking
-# ============================================================
+
+def render_evidence_brief(ev: Evidence) -> str:
+    return textwrap.dedent(
+        f"""
+        [Evidence {ev.chunk_id}]
+        source: {ev.file} p.{ev.page} blocks {ev.block_range}
+        topic: {ev.topic}
+        proposition: {ev.proposition}
+        evidence: {ev.evidence}
+        example: {ev.example}
+        terminology: {', '.join(ev.terminology)}
+        contrast: {ev.contrast}
+        cause_effect: {ev.cause_effect}
+        role: {ev.role}
+        assignment_relevance: {ev.assignment_relevance}
+        specificity_score: {ev.specificity_score}
+        final_score: {ev.final_score}
+        """
+    ).strip()
+
+
+def join_evidence_briefs(evidences: List[Evidence], limit: int) -> str:
+    return "\n\n".join(render_evidence_brief(ev) for ev in evidences[:limit])
+
+
+def evidence_lookup(evidences: List[Evidence]) -> Dict[str, Evidence]:
+    return {ev.chunk_id: ev for ev in evidences}
+
+
+def section_evidence_bundle(section: Dict[str, Any], lookup: Dict[str, Evidence]) -> str:
+    blocks = []
+    for eid in section.get("evidence_ids", []):
+        ev = lookup.get(eid)
+        if ev:
+            blocks.append(render_evidence_brief(ev))
+    return "\n\n".join(blocks)
+
+
+def strict_source_constraint_text(strict_source_only: bool, hard: bool = False) -> str:
+    if strict_source_only:
+        if hard:
+            return "- 資料にない企業名・ブランド名・事例は削除または資料語へ置換する\n- 自分の一般知識で補った具体例は禁止\n"
+        return "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n- 自分の一般知識で補った具体例は禁止\n"
+    return "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
+
+
 def block_texts_from_page(page) -> List[Tuple[int, str]]:
     blocks = page.get_text("blocks")
-    results = []
+    out = []
     for idx, block in enumerate(blocks):
         if len(block) < 5:
             continue
         text = normalize_space(block[4])
         if not text or len(text) <= 2:
             continue
-        results.append((idx, text))
-    return results
+        out.append((idx, text))
+    return out
 
 
 def merge_blocks_semantically(blocks: List[Tuple[int, str]], min_chars: int, max_chars: int) -> List[Tuple[str, str]]:
@@ -393,7 +363,7 @@ def merge_blocks_semantically(blocks: List[Tuple[int, str]], min_chars: int, max
     current_idxs: List[int] = []
     current_texts: List[str] = []
 
-    def flush():
+    def flush() -> None:
         nonlocal current_idxs, current_texts
         if not current_texts:
             return
@@ -413,8 +383,7 @@ def merge_blocks_semantically(blocks: List[Tuple[int, str]], min_chars: int, max
             flush()
         current_idxs.append(idx)
         current_texts.append(text)
-        current_len = len("\n".join(current_texts))
-        if current_len >= min_chars and text.endswith(("。", ".", "?", "!", "）", ")")):
+        if len("\n".join(current_texts)) >= min_chars and text.endswith(("。", ".", "?", "!", "）", ")")):
             flush()
 
     flush()
@@ -432,7 +401,6 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                 continue
             merged = merge_blocks_semantically(blocks, min_chars=chunk_char_min, max_chars=chunk_char_max)
             for local_idx, (block_range, text) in enumerate(merged, start=1):
-                short = normalize_space(text)[:1000]
                 chunks.append(
                     Chunk(
                         chunk_id=f"{uploaded_file.name}::p{page_no}::c{local_idx}",
@@ -440,7 +408,7 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                         page=page_no,
                         block_range=block_range,
                         text=text,
-                        short=short,
+                        short=normalize_space(text)[:1000],
                         char_count=len(text),
                         lexical_terms=lexical_terms(text, top_k=12),
                         specificity_hint=specificity_hint_score(text),
@@ -448,9 +416,7 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                 )
     return chunks
 
-# ============================================================
-# Shared ranking / evidence extraction
-# ============================================================
+
 def local_prefilter(chunks: List[Chunk], theme: str, keep: int) -> List[Chunk]:
     theme_terms = lexical_terms(theme, top_k=12)
     scored = []
@@ -489,14 +455,7 @@ def build_evidence_one_call(client: OpenAI, model: str, theme: str, chunk: Chunk
 資料断片:
 {chunk.text[:3200]}
 """
-    data = call_json(
-        client=client,
-        model=model,
-        system="資料断片を中間表現へ変換しつつ採点する。資料にないことを足さない。JSONのみ返す。",
-        user_prompt=prompt,
-        temperature=0.1,
-        max_output_tokens=1100,
-    )
+    data = call_json(client, model, "資料断片を中間表現へ変換しつつ採点する。資料にないことを足さない。JSONのみ返す。", prompt, temperature=0.1, max_output_tokens=1100)
     terminology = safe_json_list(data.get("terminology", []))
     coarse_score = int(max(0, min(3, data.get("coarse_score", 0))))
     precise_score = int(max(0, min(3, data.get("precise_score", 0))))
@@ -533,17 +492,11 @@ def cluster_duplicates(evidences: List[Evidence], threshold: float = 0.42) -> Li
         if evidences[i].duplicate_group != -1:
             continue
         evidences[i].duplicate_group = group_id
-        base_terms = lexical_terms(
-            " ".join([evidences[i].topic, evidences[i].proposition, evidences[i].evidence, " ".join(evidences[i].terminology)]),
-            top_k=14,
-        )
+        base_terms = lexical_terms(" ".join([evidences[i].topic, evidences[i].proposition, evidences[i].evidence, " ".join(evidences[i].terminology)]), top_k=14)
         for j in range(i + 1, len(evidences)):
             if evidences[j].duplicate_group != -1:
                 continue
-            cand_terms = lexical_terms(
-                " ".join([evidences[j].topic, evidences[j].proposition, evidences[j].evidence, " ".join(evidences[j].terminology)]),
-                top_k=14,
-            )
+            cand_terms = lexical_terms(" ".join([evidences[j].topic, evidences[j].proposition, evidences[j].evidence, " ".join(evidences[j].terminology)]), top_k=14)
             sim = jaccard_similarity(base_terms, cand_terms)
             same_page = evidences[i].file == evidences[j].file and evidences[i].page == evidences[j].page
             if sim >= threshold or (same_page and sim >= 0.28):
@@ -558,49 +511,12 @@ def select_representatives(evidences: List[Evidence], limit: int) -> List[Eviden
         grouped[ev.duplicate_group].append(ev)
     reps = []
     for _, items in grouped.items():
-        items = sorted(items, key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)
-        reps.append(items[0])
-    reps = sorted(reps, key=lambda x: (x.final_score, x.precise_score, x.usefulness_score), reverse=True)
-    return reps[:limit]
+        reps.append(sorted(items, key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)[0])
+    return sorted(reps, key=lambda x: (x.final_score, x.precise_score, x.usefulness_score), reverse=True)[:limit]
 
 
-def render_evidence_brief(ev: Evidence) -> str:
-    return textwrap.dedent(
-        f"""
-        [Evidence {ev.chunk_id}]
-        source: {ev.file} p.{ev.page} blocks {ev.block_range}
-        topic: {ev.topic}
-        proposition: {ev.proposition}
-        evidence: {ev.evidence}
-        example: {ev.example}
-        terminology: {', '.join(ev.terminology)}
-        contrast: {ev.contrast}
-        cause_effect: {ev.cause_effect}
-        role: {ev.role}
-        assignment_relevance: {ev.assignment_relevance}
-        specificity_score: {ev.specificity_score}
-        final_score: {ev.final_score}
-        """
-    ).strip()
-
-
-def evidence_lookup(evidences: List[Evidence]) -> Dict[str, Evidence]:
-    return {ev.chunk_id: ev for ev in evidences}
-
-
-def section_evidence_bundle(section: Dict[str, Any], lookup: Dict[str, Evidence]) -> str:
-    blocks = []
-    for eid in section.get("evidence_ids", []):
-        ev = lookup.get(eid)
-        if ev:
-            blocks.append(render_evidence_brief(ev))
-    return "\n\n".join(blocks)
-
-# ============================================================
-# Planning
-# ============================================================
 def build_argument_map(client: OpenAI, model: str, theme: str, evidences: List[Evidence], points: int = 4) -> str:
-    source = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:10])
+    source = join_evidence_briefs(evidences, 10)
     prompt = f"""
 以下は課題文と、採用候補の資料根拠です。
 この課題に答えるための論点を {points} 個前後で整理してください。
@@ -611,19 +527,18 @@ def build_argument_map(client: OpenAI, model: str, theme: str, evidences: List[E
 - 似た論点は統合する
 - 一般論ではなく資料根拠に依拠する
 - 資料固有の概念を優先する
+
+課題文:
+{theme}
+
+資料根拠:
+{source}
 """
-    return call_text(
-        client=client,
-        model=model,
-        system="講義資料から論点設計を行う。プレーンテキストのみ返す。",
-        user_prompt=f"{prompt}\n\n課題文:\n{theme}\n\n資料根拠:\n{source}",
-        temperature=0.2,
-        max_output_tokens=1300,
-    )
+    return call_text(client, model, "講義資料から論点設計を行う。プレーンテキストのみ返す。", prompt, temperature=0.2, max_output_tokens=1300)
 
 
 def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evidence], argument_map: str, target_length: int, sections_count: int) -> Dict[str, Any]:
-    source = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:12])
+    source = join_evidence_briefs(evidences, 12)
     prompt = f"""
 次の課題文、論点整理、資料根拠をもとにレポート設計図を作ってください。
 返答はJSONのみ。
@@ -649,49 +564,28 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
 - 一般論で水増ししない
 - 長さ配分は目標文字数に合わせる
 - 各節は前節から論理を前進させる
+
+課題文:
+{theme}
+
+目標文字数:
+{target_length}
+
+論点整理:
+{argument_map}
+
+資料根拠:
+{source}
 """
-    return call_json(
-        client=client,
-        model=model,
-        system="大学レポートの設計図を作る。JSONのみ返す。",
-        user_prompt=f"{prompt}\n\n課題文:\n{theme}\n\n目標文字数:\n{target_length}\n\n論点整理:\n{argument_map}\n\n資料根拠:\n{source}",
-        temperature=0.2,
-        max_output_tokens=2500,
-    )
+    return call_json(client, model, "大学レポートの設計図を作る。JSONのみ返す。", prompt, temperature=0.2, max_output_tokens=2500)
 
-# ============================================================
-# Generation
-# ============================================================
-def generate_single_pass_report(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    target_length: int,
-    argument_map: str,
-    evidences: List[Evidence],
-    style_mode: str,
-    abstraction_mode: str,
-    strict_source_only: bool,
-) -> str:
-    style_instruction = {
-        "標準": "自然で読みやすい文体にする。",
-        "やや硬め": "少しフォーマルで簡潔な文体にする。",
-        "やや柔らかめ": "少し柔らかいが幼くしない文体にする。",
-    }[style_mode]
-    abstraction_instruction = {
-        "標準": "抽象と具体のバランスを標準にする。",
-        "抽象度高め": "やや抽象化して上位概念で整理する。",
-        "抽象度低め": "やや具体的にし、資料上の概念や事例を厚めに使う。",
-    }[abstraction_mode]
-    source = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:8])
+
+def generate_single_pass_report(client: OpenAI, model: str, theme: str, target_length: int, argument_map: str, evidences: List[Evidence], style_mode: str, abstraction_mode: str, strict_source_only: bool) -> str:
+    style_instruction = {"標準": "自然で読みやすい文体にする。", "やや硬め": "少しフォーマルで簡潔な文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
+    abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化して上位概念で整理する。", "抽象度低め": "やや具体的にし、資料上の概念や事例を厚めに使う。"}[abstraction_mode]
+    source = join_evidence_briefs(evidences, 8)
     must_terms = important_terms_from_evidences(evidences, top_k=8)
-    source_constraint = (
-        "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n"
-        "- 自分の一般知識で補った具体例は禁止\n"
-        if strict_source_only else
-        "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
-    )
-
+    source_constraint = strict_source_constraint_text(strict_source_only)
     prompt = f"""
 以下の課題文、論点整理、資料根拠をもとに約{target_length}字のレポート本文を書いてください。
 本文のみ出力してください。
@@ -723,50 +617,17 @@ def generate_single_pass_report(
 - {style_instruction}
 - {abstraction_instruction}
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="資料密着型の大学レポート本文を書く。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.42,
-        max_output_tokens=3200,
-    ))
+    return clean_text(call_text(client, model, "資料密着型の大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.42, max_output_tokens=3200))
 
 
-def generate_section_text(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    thesis: str,
-    section: Dict[str, Any],
-    evidence_bundle: str,
-    previous_text: str,
-    used_terms: List[str],
-    style_mode: str,
-    abstraction_mode: str,
-    strict_source_only: bool,
-) -> str:
-    style_instruction = {
-        "標準": "自然で読みやすい大学レポート文体にする。",
-        "やや硬め": "少しフォーマルで締まった文体にする。",
-        "やや柔らかめ": "少し柔らかいが幼くしない文体にする。",
-    }[style_mode]
-    abstraction_instruction = {
-        "標準": "抽象と具体のバランスを標準にする。",
-        "抽象度高め": "やや抽象化し、上位概念で整理する。",
-        "抽象度低め": "やや具体化し、資料記述を厚めに使う。",
-    }[abstraction_mode]
-    source_constraint = (
-        "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n"
-        "- 自分の一般知識で補った具体例は禁止\n"
-        if strict_source_only else
-        "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
-    )
+def generate_section_text(client: OpenAI, model: str, theme: str, thesis: str, section: Dict[str, Any], evidence_bundle: str, previous_text: str, used_terms: List[str], style_mode: str, abstraction_mode: str, strict_source_only: bool) -> str:
+    style_instruction = {"標準": "自然で読みやすい大学レポート文体にする。", "やや硬め": "少しフォーマルで締まった文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
+    abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化し、上位概念で整理する。", "抽象度低め": "やや具体化し、資料記述を厚めに使う。"}[abstraction_mode]
+    source_constraint = strict_source_constraint_text(strict_source_only)
     prev_tail = previous_text[-1700:] if previous_text else "なし"
     used_terms_text = ", ".join(used_terms[-16:]) if used_terms else "なし"
     must_terms = ", ".join(section.get("must_use_terms", []))
     forbidden_patterns = ", ".join(section.get("forbidden_patterns", []))
-
     prompt = f"""
 課題文に対するレポートのうち、この節だけを書いてください。
 本文のみ出力してください。
@@ -811,14 +672,7 @@ forbidden_patterns: {forbidden_patterns}
 - {style_instruction}
 - {abstraction_instruction}
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="資料根拠に忠実な大学レポート本文を書く。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.40,
-        max_output_tokens=2200,
-    ))
+    return clean_text(call_text(client, model, "資料根拠に忠実な大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.40, max_output_tokens=2200))
 
 
 def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evidences: List[Evidence], min_terms: int, strict_source_only: bool) -> str:
@@ -830,6 +684,7 @@ def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evide
     for ev in evidences[:6]:
         if any(t in ev.terminology or t in ev.topic or t in ev.proposition for t in missing):
             ref_blocks.append(render_evidence_brief(ev))
+    ref_text = "\n\n".join(ref_blocks[:4])
     source_constraint = "資料外の企業例・一般知識の補完は禁止。" if strict_source_only else "資料外例は原則避ける。"
     prompt = f"""
 以下のレポート本文を、論旨を保ったまま最小限だけ書き直してください。
@@ -843,7 +698,7 @@ def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evide
 {', '.join(missing)}
 
 参考根拠:
-{'\n\n'.join(ref_blocks[:4])}
+{ref_text}
 
 本文:
 {text}
@@ -855,14 +710,7 @@ def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evide
 - 一般論で水増ししない
 - {source_constraint}
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="最小修正で概念不足を補う。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.25,
-        max_output_tokens=2400,
-    ))
+    return clean_text(call_text(client, model, "最小修正で概念不足を補う。本文のみ返す。", prompt, temperature=0.25, max_output_tokens=2400))
 
 
 def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], style_mode: str) -> str:
@@ -871,12 +719,8 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
         return report
     body = "\n\n".join(paragraphs[:-1])
     last = paragraphs[-1]
-    evidence_text = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:5])
-    style_instruction = {
-        "標準": "自然で読みやすい締めにする。",
-        "やや硬め": "少しフォーマルで締まった締めにする。",
-        "やや柔らかめ": "少し柔らかいが幼くしない締めにする。",
-    }[style_mode]
+    evidence_text = join_evidence_briefs(evidences, 5)
+    style_instruction = {"標準": "自然で読みやすい締めにする。", "やや硬め": "少しフォーマルで締まった締めにする。", "やや柔らかめ": "少し柔らかいが幼くしない締めにする。"}[style_mode]
     prompt = f"""
 以下のレポート本文の最後の1段落だけ書き直してください。
 本文1段落のみ出力してください。
@@ -900,20 +744,11 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
 - 資料に依拠したまとめにする
 - {style_instruction}
 """
-    new_last = clean_text(call_text(
-        client=client,
-        model=model,
-        system="結論段落だけを再統合して強化する。本文1段落のみ返す。",
-        user_prompt=prompt,
-        temperature=0.3,
-        max_output_tokens=700,
-    ))
+    new_last = clean_text(call_text(client, model, "結論段落だけを再統合して強化する。本文1段落のみ返す。", prompt, temperature=0.3, max_output_tokens=700))
     paragraphs[-1] = new_last
     return "\n\n".join(paragraphs)
 
-# ============================================================
-# Critique / checks
-# ============================================================
+
 def critique_report(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence]) -> Dict[str, Any]:
     ref_terms = important_terms_from_evidences(evidences, top_k=12)
     prompt = f"""
@@ -939,14 +774,7 @@ def critique_report(client: OpenAI, model: str, theme: str, report: str, evidenc
 本文:
 {report}
 """
-    data = call_json(
-        client=client,
-        model=model,
-        system="資料固有性、重複、論点カバー、AIっぽさを厳しく評価する。JSONのみ返す。",
-        user_prompt=prompt,
-        temperature=0.0,
-        max_output_tokens=750,
-    )
+    data = call_json(client, model, "資料固有性、重複、論点カバー、AIっぽさを厳しく評価する。JSONのみ返す。", prompt, temperature=0.0, max_output_tokens=750)
     data["external_example_risk"] = detect_external_example_risk(report, evidences)
     data["abstract_term_pressure"] = count_abstract_term_hits(report)
     missing_terms = [t for t in important_terms_from_evidences(evidences, top_k=12) if t not in report][:6]
@@ -960,18 +788,9 @@ def critique_report(client: OpenAI, model: str, theme: str, report: str, evidenc
 
 
 def rewrite_once(client: OpenAI, model: str, theme: str, report: str, critique: Dict[str, Any], evidences: List[Evidence], style_mode: str, strict_source_only: bool) -> str:
-    style_instruction = {
-        "標準": "自然で読みやすくする。",
-        "やや硬め": "少しフォーマルで締まった文体にする。",
-        "やや柔らかめ": "少し柔らかくするが、幼くしない。",
-    }[style_mode]
-    source_constraint = (
-        "- 資料にない企業名・ブランド名・事例は削除または資料語へ置換する\n"
-        "- 自分の一般知識で補った具体例は禁止\n"
-        if strict_source_only else
-        "- 資料外例は原則避け、資料語を優先する\n"
-    )
-    source = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:6])
+    style_instruction = {"標準": "自然で読みやすくする。", "やや硬め": "少しフォーマルで締まった文体にする。", "やや柔らかめ": "少し柔らかくするが、幼くしない。"}[style_mode]
+    source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
+    source = join_evidence_briefs(evidences, 6)
     focus = ", ".join(critique.get("revision_focus", [])) or "資料固有性と重複"
     weaknesses = "\n".join(f"- {w}" for w in critique.get("weaknesses", [])) or "- なし"
     prompt = f"""
@@ -1001,14 +820,7 @@ def rewrite_once(client: OpenAI, model: str, theme: str, report: str, critique: 
 - 抽象的すぎる箇所だけ具体化する
 {source_constraint}- {style_instruction}
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="最小限の改稿で品質を上げる。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.28,
-        max_output_tokens=2600,
-    ))
+    return clean_text(call_text(client, model, "最小限の改稿で品質を上げる。本文のみ返す。", prompt, temperature=0.28, max_output_tokens=2600))
 
 
 def humanize_if_needed(client: OpenAI, model: str, theme: str, report: str, critique: Dict[str, Any]) -> str:
@@ -1030,43 +842,18 @@ def humanize_if_needed(client: OpenAI, model: str, theme: str, report: str, crit
 - 資料固有語を残す
 - 感想文にしない
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="AIっぽさだけを軽く減らす。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.3,
-        max_output_tokens=2400,
-    ))
+    return clean_text(call_text(client, model, "AIっぽさだけを軽く減らす。本文のみ返す。", prompt, temperature=0.3, max_output_tokens=2400))
 
 
-def expand_report_if_too_short(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    report: str,
-    evidences: List[Evidence],
-    target_length: int,
-    strict_source_only: bool,
-) -> str:
-    status = length_band_status(report, target_length)
-    if status != "short":
+def expand_report_if_too_short(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
+    if length_band_status(report, target_length) != "short":
         return report
-
     targets = build_length_targets(target_length)
     shortage = max(0, targets["min"] - len(report))
     if shortage <= 0:
         return report
-
-    source_constraint = (
-        "- 資料にない企業名・ブランド名・事例は追加しない\n"
-        "- 自分の一般知識で補った具体例は禁止\n"
-        if strict_source_only
-        else "- 資料外例は原則避け、資料にある概念や事例を優先する\n"
-    )
-
-    evidence_text = "\n\n".join(render_evidence_brief(ev) for ev in evidences[:6])
-
+    source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
+    evidence_text = join_evidence_briefs(evidences, 6)
     prompt = f"""
 以下のレポート本文は、目標字数に対して短すぎます。
 本文全体を書き直し、字数不足を補ってください。本文のみ出力してください。
@@ -1099,14 +886,8 @@ def expand_report_if_too_short(
 {source_constraint}- 最低 {targets['min']} 字以上を目指す
 - できれば {targets['ideal']} 字前後に近づける
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="字数不足の本文を、既存論点の補強だけで自然に伸ばす。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.28,
-        max_output_tokens=3200,
-    ))
+    return clean_text(call_text(client, model, "字数不足の本文を、既存論点の補強だけで自然に伸ばす。本文のみ返す。", prompt, temperature=0.28, max_output_tokens=3200))
+
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int) -> str:
     if length_band_status(report, target_length) != "long":
@@ -1125,58 +906,39 @@ def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_
 本文:
 {report}
 """
-    return clean_text(call_text(
-        client=client,
-        model=model,
-        system="文字数だけを自然に圧縮する。本文のみ返す。",
-        user_prompt=prompt,
-        temperature=0.2,
-        max_output_tokens=2600,
-    ))
+    return clean_text(call_text(client, model, "文字数だけを自然に圧縮する。本文のみ返す。", prompt, temperature=0.2, max_output_tokens=2600))
 
 
-def enforce_length_requirements(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    report: str,
-    evidences: List[Evidence],
-    target_length: int,
-    strict_source_only: bool,
-) -> str:
-    status = length_band_status(report, target_length)
-    if status == "short":
-        report = expand_report_if_too_short(
-            client=client,
-            model=model,
-            theme=theme,
-            report=report,
-            evidences=evidences,
-            target_length=target_length,
-            strict_source_only=strict_source_only,
-        )
-        # 1回の追記でまだ足りない場合だけもう1回
+def enforce_length_requirements(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
+    if length_band_status(report, target_length) == "short":
+        report = expand_report_if_too_short(client, model, theme, report, evidences, target_length, strict_source_only)
         if length_band_status(report, target_length) == "short":
-            report = expand_report_if_too_short(
-                client=client,
-                model=model,
-                theme=theme,
-                report=report,
-                evidences=evidences,
-                target_length=target_length,
-                strict_source_only=strict_source_only,
-            )
+            report = expand_report_if_too_short(client, model, theme, report, evidences, target_length, strict_source_only)
     if length_band_status(report, target_length) == "long":
         report = compress_report_if_too_long(client, model, report, target_length)
     return report
 
 
-def adjust_length_if_needed(client: OpenAI, model: str, report: str, target_length: int) -> str:
-    return compress_report_if_too_long(client, model, report, target_length)
+def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
+    parts = [f"課題文: {theme.strip()}"]
+    if focus_points.strip():
+        parts.append(f"重視観点: {focus_points.strip()}")
+    if preferred_concepts.strip():
+        parts.append(f"扱いたい概念: {preferred_concepts.strip()}")
+    if excluded_topics.strip():
+        parts.append(f"除外したい話題: {excluded_topics.strip()}")
+    if source_scope.strip():
+        parts.append(f"優先範囲: {source_scope.strip()}")
+    return "\n".join(parts)
 
-# ============================================================
-# Pipelines
-# ============================================================
+
+def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> bool:
+    broad_markers = ["マーケティング", "ブランド", "消費者", "科学技術", "戦略", "流通", "企業", "影響", "論じ", "重要性", "発展"]
+    score = sum(1 for m in broad_markers if m in theme)
+    helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
+    return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
+
+
 def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str) -> Dict[str, Any]:
     cfg = FAST_SETTINGS
     with st.spinner("高速モードでPDFを解析中..."):
@@ -1205,14 +967,12 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
     selected = select_representatives(evidences, limit=cfg["final_keep"])
 
     with st.spinner("論点整理中..."):
-        argument_map = build_argument_map(client, model, theme, selected, points=4)
+        argument_map = build_argument_map(client, model, theme, selected, points=3)
 
     split_count = section_split_count(target_length, mode="高速")
     if split_count == 1:
         with st.spinner("本文生成中..."):
-            report = generate_single_pass_report(
-                client, model, theme, target_length, argument_map, selected, style_mode, abstraction_mode, strict_source_only=False
-            )
+            report = generate_single_pass_report(client, model, theme, target_length, argument_map, selected, style_mode, abstraction_mode, strict_source_only=False)
     else:
         with st.spinner("高速分割生成中..."):
             blueprint = build_blueprint(client, model, theme, selected, argument_map, target_length, sections_count=split_count)
@@ -1225,9 +985,7 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
             bar = st.progress(0, text="節ごとに短く分けて生成しています")
             for i, section in enumerate(sections):
                 bundle = section_evidence_bundle(section, lookup)
-                part = generate_section_text(
-                    client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=False
-                )
+                part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=False)
                 parts.append(part)
                 previous = "\n\n".join(parts)
                 used_terms.extend(lexical_terms(part, top_k=8))
@@ -1243,14 +1001,7 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
         critique = critique_report(client, model, theme, report, selected)
 
-    return {
-        "mode": "高速",
-        "chunks": chunks,
-        "selected_evidences": selected,
-        "argument_map": argument_map,
-        "report": report,
-        "critique": critique,
-    }
+    return {"mode": "高速", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "report": report, "critique": critique}
 
 
 def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str) -> Dict[str, Any]:
@@ -1273,8 +1024,7 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         evidences = []
         upper = min(cfg["api_keep"], len(prefiltered))
         for i, chunk in enumerate(prefiltered[:upper]):
-            ev = build_evidence_one_call(client, model, theme, chunk)
-            evidences.append(ev)
+            evidences.append(build_evidence_one_call(client, model, theme, chunk))
             bar.progress((i + 1) / upper, text=f"精査 {i + 1}/{upper}")
 
     evidences.sort(key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)
@@ -1283,9 +1033,7 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
 
     with st.spinner("論点設計中..."):
         argument_map = build_argument_map(client, model, theme, selected, points=5)
-        blueprint = build_blueprint(
-            client, model, theme, selected, argument_map, target_length, sections_count=section_split_count(target_length, mode="ハイエンド")
-        )
+        blueprint = build_blueprint(client, model, theme, selected, argument_map, target_length, sections_count=section_split_count(target_length, mode="ハイエンド"))
 
     lookup = evidence_lookup(selected)
     thesis = str(blueprint.get("thesis", ""))
@@ -1298,89 +1046,43 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         bar = st.progress(0, text="証拠束つきで節ごとに生成しています")
         for i, section in enumerate(sections):
             bundle = section_evidence_bundle(section, lookup)
-            part = generate_section_text(
-                client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=True
-            )
+            part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=True)
             parts.append(part)
             previous = "\n\n".join(parts)
             used_terms.extend(lexical_terms(part, top_k=8))
             bar.progress((i + 1) / len(sections), text=f"節生成 {i + 1}/{len(sections)}")
         report = clean_text("\n\n".join(parts))
 
-    with st.spinner("ハイエンド仕上げ中..."):
-        report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=True)
-        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
-        report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
-        critique1 = critique_report(client, model, theme, report, selected)
-        if critique1.get("revision_needed", False) or int(critique1.get("overall_score", 0)) < 88 or critique1.get("external_example_risk", 0) >= 1:
-            report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
-        critique2 = critique_report(client, model, theme, report, selected)
-        report = humanize_if_needed(client, model, theme, report, critique2)
-        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
-        critique_final = critique_report(client, model, theme, report, selected)
+    report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=True)
+    report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
+    report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
+    critique1 = critique_report(client, model, theme, report, selected)
+    if critique1.get("revision_needed", False) or int(critique1.get("overall_score", 0)) < 88 or critique1.get("external_example_risk", 0) >= 1:
+        report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
+    critique2 = critique_report(client, model, theme, report, selected)
+    report = humanize_if_needed(client, model, theme, report, critique2)
+    report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
+    critique_final = critique_report(client, model, theme, report, selected)
 
-    return {
-        "mode": "ハイエンド",
-        "chunks": chunks,
-        "selected_evidences": selected,
-        "argument_map": argument_map,
-        "blueprint": blueprint,
-        "report": report,
-        "critique": critique_final,
-    }
+    return {"mode": "ハイエンド", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "blueprint": blueprint, "report": report, "critique": critique_final}
 
-# ============================================================
-# Session state
-# ============================================================
-for key, default in {
-    "result": None,
-    "theme_snapshot": "",
-}.items():
+
+for key, default in {"result": None, "theme_snapshot": ""}.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ============================================================
-# UI
-# ============================================================
+
 left, right = st.columns([1.18, 0.82], gap="large")
 
 with left:
     st.subheader("入力")
-    uploaded_files = st.file_uploader(
-        "PDFを複数アップロード",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="講義スライド、配布資料、補足PDFなどを一括投入できます。",
-    )
-    theme = st.text_area(
-        "課題文 / テーマ",
-        placeholder="例：科学技術の発展がマーケティング・チャネル設計に与えた影響を、ディスインターメディエーションと電子市場を中心に論じなさい。",
-        height=130,
-    )
-    focus_points = st.text_input(
-        "特に重視したい観点（任意）",
-        placeholder="例：チャネル設計、ディスインターメディエーション、チャネル・コンフリクト",
-    )
-    preferred_concepts = st.text_input(
-        "扱いたい概念（任意）",
-        placeholder="例：電子市場、垂直型システム、EDI、リテール・リンク",
-    )
-    excluded_topics = st.text_input(
-        "除外したい話題（任意）",
-        placeholder="例：ブランド価値、感情分析、新製品開発",
-    )
-    source_scope = st.text_input(
-        "使う範囲・章指定（任意）",
-        placeholder="例：7章中心、7マーケティング・チャネル p.11〜38 を優先",
-    )
-    target_length = st.number_input(
-        "目標文字数",
-        min_value=300,
-        max_value=10000,
-        value=3000,
-        step=100,
-        help="高速モードは短めほど速く、ハイエンドでは長文でも比較的安定します。",
-    )
+    uploaded_files = st.file_uploader("PDFを複数アップロード", type=["pdf"], accept_multiple_files=True)
+    theme = st.text_area("課題文 / テーマ", placeholder="例：科学技術の発展がマーケティング・チャネル設計に与えた影響を、ディスインターメディエーションと電子市場を中心に論じなさい。", height=130)
+    focus_points = st.text_input("特に重視したい観点（任意）", placeholder="例：チャネル設計、ディスインターメディエーション、チャネル・コンフリクト")
+    preferred_concepts = st.text_input("扱いたい概念（任意）", placeholder="例：電子市場、垂直型システム、EDI、リテール・リンク")
+    excluded_topics = st.text_input("除外したい話題（任意）", placeholder="例：ブランド価値、感情分析、新製品開発")
+    source_scope = st.text_input("使う範囲・章指定（任意）", placeholder="例：7章中心、7マーケティング・チャネル p.11〜38 を優先")
+    target_length = st.number_input("目標文字数", min_value=300, max_value=10000, value=3000, step=100)
 
 with right:
     st.subheader("設定")
@@ -1388,75 +1090,37 @@ with right:
     style_mode = st.selectbox("文体", ["標準", "やや硬め", "やや柔らかめ"], index=0)
     abstraction_mode = st.selectbox("抽象度", ["標準", "抽象度高め", "抽象度低め"], index=0)
     model_name = st.text_input("使用モデル", value=FAST_DEFAULT_MODEL if mode == "高速" else HIGH_DEFAULT_MODEL)
-    st.markdown(
-        f"""
-        <div class="card">
-            <b>現在のモード</b><br><br>
-            {'高速モード: ローカル粗選別 → API最小化 → 必要時のみ1回改稿' if mode == '高速' else 'ハイエンドモード: 候補を厚めに精査 → 節ごとの証拠束生成 → 資料外例チェック付き仕上げ'}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.info("高速はローカル粗選別＋軽い改稿、ハイエンドは証拠束つき分割生成＋厳しめ仕上げです。")
 
 api_key = get_api_key()
 confirm_generate = st.checkbox("この設定で本当に生成する", value=False)
-run_fast_button, run_high_button = st.columns(2)
-fast_clicked = run_fast_button.button("高速で生成", use_container_width=True, type="secondary")
-high_clicked = run_high_button.button("ハイエンドで生成", use_container_width=True, type="primary")
-
-# ============================================================
-# Input shaping / scope warning
-# ============================================================
-def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
-    parts = [f"課題文: {theme.strip()}"]
-    if focus_points.strip():
-        parts.append(f"重視観点: {focus_points.strip()}")
-    if preferred_concepts.strip():
-        parts.append(f"扱いたい概念: {preferred_concepts.strip()}")
-    if excluded_topics.strip():
-        parts.append(f"除外したい話題: {excluded_topics.strip()}")
-    if source_scope.strip():
-        parts.append(f"優先範囲: {source_scope.strip()}")
-    return "
-".join(parts)
-
-
-def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> bool:
-    broad_markers = ["マーケティング", "ブランド", "消費者", "科学技術", "戦略", "流通", "企業", "影響", "論じ", "重要性", "発展"]
-    score = sum(1 for m in broad_markers if m in theme)
-    helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
-    return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
-
+fast_col, high_col = st.columns(2)
+fast_clicked = fast_col.button("高速で生成", use_container_width=True)
+high_clicked = high_col.button("ハイエンドで生成", use_container_width=True, type="primary")
 
 if broad_theme_warning(theme, focus_points, preferred_concepts, excluded_topics, source_scope):
-    st.info(
-        "この課題は範囲が広いため、出力が総花的になる可能性があります。"
-        "『特に重視したい観点』『扱いたい概念』『除外したい話題』『使う範囲』を入れると精度が上がります。"
-    )
+    st.info("この課題は範囲が広いため、出力が総花的になる可能性があります。補助欄を入れると精度が上がります。")
 
 
-# ============================================================
-# Main run
-# ============================================================
-def validate_inputs(api_key: str, uploaded_files, theme: str, confirm_generate: bool):
-    if not confirm_generate:
-        st.warning("生成前に『この設定で本当に生成する』にチェックを入れてください。")
+def validate_inputs(api_key_value: str, uploaded, theme_text: str, confirm_flag: bool) -> None:
+    if not confirm_flag:
+        st.warning("生成前にチェックを入れてください。")
         st.stop()
-    if not api_key:
+    if not api_key_value:
         st.error("APIキーを入力してください。")
         st.stop()
-    if not uploaded_files:
+    if not uploaded:
         st.error("PDFを1つ以上アップロードしてください。")
         st.stop()
-    if not theme.strip():
+    if not theme_text.strip():
         st.error("課題文またはテーマを入力してください。")
         st.stop()
+
 
 if fast_clicked or high_clicked:
     validate_inputs(api_key, uploaded_files, theme, confirm_generate)
     client = get_client(api_key)
-    user_guidance = build_user_guidance(theme, focus_points, preferred_concepts, excluded_topics, source_scope)
-    effective_theme = user_guidance if user_guidance.strip() else theme
+    effective_theme = build_user_guidance(theme, focus_points, preferred_concepts, excluded_topics, source_scope)
     try:
         if fast_clicked:
             result = run_fast_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
@@ -1470,9 +1134,7 @@ if fast_clicked or high_clicked:
         st.exception(e)
         st.stop()
 
-# ============================================================
-# Render results
-# ============================================================
+
 if st.session_state.result:
     result = st.session_state.result
     report = result["report"]
@@ -1489,17 +1151,7 @@ if st.session_state.result:
         m2.metric("最終文字数", len(report))
         m3.metric("採用根拠数", len(selected))
         m4.metric("品質スコア", int(critique.get("overall_score", 0)))
-        d1, d2 = st.columns([0.55, 0.45])
-        with d1:
-            st.download_button(
-                "本文をテキスト保存",
-                data=report,
-                file_name="reportflow_report.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with d2:
-            st.code(report, language=None)
+        st.download_button("本文をテキスト保存", data=report, file_name="reportflow_report.txt", mime="text/plain", use_container_width=True)
 
     with tab2:
         st.subheader("採用された根拠")
@@ -1525,7 +1177,6 @@ if st.session_state.result:
             st.text_area("実際に使ったテーマ解釈", result.get("effective_theme", ""), height=140)
         st.text_area("argument_map", result.get("argument_map", ""), height=260)
         if result.get("blueprint"):
-            st.write("節設計")
             blueprint = result.get("blueprint", {})
             st.write(f"中心主張: {blueprint.get('thesis', '')}")
             for sec in blueprint.get("sections", []):
@@ -1542,6 +1193,5 @@ if st.session_state.result:
     with tab4:
         st.subheader("内部評価")
         st.json(critique)
-        st.markdown("<div class='tiny'>ハイエンドでは資料外例チェック・資料語不足チェック・結論再生成まで行います。</div>", unsafe_allow_html=True)
         with st.expander("重要概念候補"):
             st.write(", ".join(important_terms_from_evidences(selected, top_k=16)))
