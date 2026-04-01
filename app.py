@@ -303,16 +303,35 @@ def final_score_formula(coarse_score: int, precise_score: int, usefulness_score:
 
 def section_split_count(target_length: int, mode: str) -> int:
     if mode == "高速":
-        if target_length <= 2500:
+        if target_length <= 2200:
             return 1
         if target_length <= 4500:
             return 2
         return 3
-    if target_length <= 2500:
+    if target_length <= 2200:
         return 2
     if target_length <= 4500:
         return 3
     return 4
+
+
+def length_band_status(text: str, target_length: int) -> str:
+    current = len(text)
+    low = int(target_length * 0.90)
+    high = int(target_length * 1.08)
+    if current < low:
+        return "short"
+    if current > high:
+        return "long"
+    return "ok"
+
+
+def build_length_targets(target_length: int) -> Dict[str, int]:
+    return {
+        "min": int(target_length * 0.90),
+        "ideal": target_length,
+        "max": int(target_length * 1.08),
+    }
 
 
 def important_terms_from_evidences(evidences: List[Evidence], top_k: int = 14) -> List[str]:
@@ -1021,17 +1040,92 @@ def humanize_if_needed(client: OpenAI, model: str, theme: str, report: str, crit
     ))
 
 
-def adjust_length_if_needed(client: OpenAI, model: str, report: str, target_length: int) -> str:
-    if approx_char_delta(report, target_length) <= max(120, int(target_length * 0.08)):
+def expand_report_if_too_short(
+    client: OpenAI,
+    model: str,
+    theme: str,
+    report: str,
+    evidences: List[Evidence],
+    target_length: int,
+    strict_source_only: bool,
+) -> str:
+    status = length_band_status(report, target_length)
+    if status != "short":
         return report
+
+    targets = build_length_targets(target_length)
+    shortage = max(0, targets["min"] - len(report))
+    if shortage <= 0:
+        return report
+
+    source_constraint = (
+        "- 資料にない企業名・ブランド名・事例は追加しない
+"
+        "- 自分の一般知識で補った具体例は禁止
+"
+        if strict_source_only else
+        "- 資料外例は原則避け、資料にある概念や事例を優先する
+"
+    )
+
+    evidence_text = "
+
+".join(render_evidence_brief(ev) for ev in evidences[:6])
     prompt = f"""
-以下の本文を、内容をなるべく保ったまま約{target_length}字に調整してください。
+以下のレポート本文は、目標字数に対して短すぎます。
+本文全体を書き直し、字数不足を補ってください。本文のみ出力してください。
+
+課題文:
+{theme}
+
+現在の文字数:
+{len(report)}
+必要な最低文字数:
+{targets['min']}
+理想文字数:
+{targets['ideal']}
+追加で必要な目安:
+約{shortage}字
+
+参考根拠:
+{evidence_text}
+
+現在の本文:
+{report}
+
+条件:
+- 本文のみ
+- 新しい論点を追加しない
+- 既存論点の補強、具体化、資料間の接続強化で字数を増やす
+- 各段落で資料由来の概念を明示する
+- 水増し表現は禁止
+- 抽象語の言い換え反復で伸ばさない
+{source_constraint}- 最低 {targets['min']} 字以上を目指す
+- できれば {targets['ideal']} 字前後に近づける
+"""
+    return clean_text(call_text(
+        client=client,
+        model=model,
+        system="字数不足の本文を、既存論点の補強だけで自然に伸ばす。本文のみ返す。",
+        user_prompt=prompt,
+        temperature=0.28,
+        max_output_tokens=3200,
+    ))
+
+
+def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int) -> str:
+    if length_band_status(report, target_length) != "long":
+        return report
+    targets = build_length_targets(target_length)
+    prompt = f"""
+以下の本文を、内容をなるべく保ったまま約{targets['ideal']}字に調整してください。
 本文のみ出力してください。
 
 条件:
 - 本文のみ
 - 不自然な圧縮をしない
 - 資料固有語を残す
+- できれば {targets['max']} 字以下にする
 
 本文:
 {report}
@@ -1039,11 +1133,51 @@ def adjust_length_if_needed(client: OpenAI, model: str, report: str, target_leng
     return clean_text(call_text(
         client=client,
         model=model,
-        system="文字数だけを自然に調整する。本文のみ返す。",
+        system="文字数だけを自然に圧縮する。本文のみ返す。",
         user_prompt=prompt,
         temperature=0.2,
         max_output_tokens=2600,
     ))
+
+
+def enforce_length_requirements(
+    client: OpenAI,
+    model: str,
+    theme: str,
+    report: str,
+    evidences: List[Evidence],
+    target_length: int,
+    strict_source_only: bool,
+) -> str:
+    status = length_band_status(report, target_length)
+    if status == "short":
+        report = expand_report_if_too_short(
+            client=client,
+            model=model,
+            theme=theme,
+            report=report,
+            evidences=evidences,
+            target_length=target_length,
+            strict_source_only=strict_source_only,
+        )
+        # 1回の追記でまだ足りない場合だけもう1回
+        if length_band_status(report, target_length) == "short":
+            report = expand_report_if_too_short(
+                client=client,
+                model=model,
+                theme=theme,
+                report=report,
+                evidences=evidences,
+                target_length=target_length,
+                strict_source_only=strict_source_only,
+            )
+    if length_band_status(report, target_length) == "long":
+        report = compress_report_if_too_long(client, model, report, target_length)
+    return report
+
+
+def adjust_length_if_needed(client: OpenAI, model: str, report: str, target_length: int) -> str:
+    return compress_report_if_too_long(client, model, report, target_length)
 
 # ============================================================
 # Pipelines
@@ -1107,10 +1241,11 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
             report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
 
     report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=False)
+    report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
     critique = critique_report(client, model, theme, report, selected)
     if critique.get("revision_needed", False) and int(critique.get("overall_score", 0)) < 84:
         report = rewrite_once(client, model, theme, report, critique, selected, style_mode, strict_source_only=False)
-        report = adjust_length_if_needed(client, model, report, target_length)
+        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
         critique = critique_report(client, model, theme, report, selected)
 
     return {
@@ -1179,13 +1314,14 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
 
     with st.spinner("ハイエンド仕上げ中..."):
         report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=True)
+        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
         report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
         critique1 = critique_report(client, model, theme, report, selected)
         if critique1.get("revision_needed", False) or int(critique1.get("overall_score", 0)) < 88 or critique1.get("external_example_risk", 0) >= 1:
             report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
         critique2 = critique_report(client, model, theme, report, selected)
         report = humanize_if_needed(client, model, theme, report, critique2)
-        report = adjust_length_if_needed(client, model, report, target_length)
+        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
         critique_final = critique_report(client, model, theme, report, selected)
 
     return {
