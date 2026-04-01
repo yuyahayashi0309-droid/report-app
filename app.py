@@ -1058,15 +1058,12 @@ def expand_report_if_too_short(
     if shortage <= 0:
         return report
 
-    source_constraint = (
-        "- 資料にない企業名・ブランド名・事例は追加しない
-"
-        "- 自分の一般知識で補った具体例は禁止
-"
-        if strict_source_only else
-        "- 資料外例は原則避け、資料にある概念や事例を優先する
-"
-    )
+source_constraint = (
+    "- 資料にない企業名・ブランド名・事例は追加しない\n"
+    "- 自分の一般知識で補った具体例は禁止\n"
+    if strict_source_only
+    else "- 資料外例は原則避け、資料にある概念や事例を優先する\n"
+)
 
     evidence_text = "
 
