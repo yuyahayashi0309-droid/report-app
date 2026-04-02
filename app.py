@@ -597,14 +597,17 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
     - must_use_terms: 概念配列（2〜5個）
     - avoid_overlap_with: 節名配列
     - forbidden_patterns: 配列
+    - must_not_repeat: 配列（この節では再説明しない論点）
     - target_chars: 目安文字数
 
 条件:
 - 節数は {sections_count}
 - 各節は別の役割を持つ
+- 各節は前の節で十分に説明した話題を繰り返さない
 - 少なくとも1節は資料間のつながりや対比を扱う
 - 一般論で水増ししない
 - 長さ配分は目標文字数に合わせる
+- 10000字級では、後半が前半の言い換え再説明にならないようにする
 
 課題文:
 {theme}
@@ -618,7 +621,7 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
 資料根拠:
 {source}
 """
-    return call_json(client, model, "大学レポートの設計図を作る。JSONのみ返す。", prompt, temperature=0.2, max_output_tokens=3200)
+    return call_json(client, model, "大学レポートの設計図を作る。JSONのみ返す。", prompt, temperature=0.2, max_output_tokens=3600)
 
 # ============================================================
 # Generation
@@ -667,10 +670,11 @@ def generate_section_text(client: OpenAI, model: str, theme: str, thesis: str, s
     style_instruction = {"標準": "自然で読みやすい大学レポート文体にする。", "やや硬め": "少しフォーマルで締まった文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
     abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化し、上位概念で整理する。", "抽象度低め": "やや具体化し、資料記述を厚めに使う。"}[abstraction_mode]
     source_constraint = strict_source_constraint_text(strict_source_only)
-    prev_tail = previous_text[-1800:] if previous_text else "なし"
+    prev_tail = previous_text[-1500:] if previous_text else "なし"
     used_terms_text = ", ".join(used_terms[-18:]) if used_terms else "なし"
     must_terms = ", ".join(section.get("must_use_terms", []))
     forbidden_patterns = ", ".join(section.get("forbidden_patterns", []))
+    must_not_repeat = ", ".join(section.get("must_not_repeat", []))
     target_chars = int(section.get("target_chars", 1200) or 1200)
     prompt = f"""
 課題文に対するレポートのうち、この節だけを書いてください。
@@ -691,6 +695,7 @@ target_chars: {target_chars}
 must_use_terms: {must_terms}
 avoid_overlap_with: {', '.join(section.get('avoid_overlap_with', []))}
 forbidden_patterns: {forbidden_patterns}
+must_not_repeat: {must_not_repeat}
 
 この節で使う根拠:
 {evidence_bundle}
@@ -708,6 +713,8 @@ forbidden_patterns: {forbidden_patterns}
 - 同じ主張の繰り返し禁止
 - この節の key_claim に集中する
 - must_use_terms を最低2個使う
+- must_not_repeat に入っている話題は再説明しない
+- 前半ですでに十分述べた論点を言い換えて繰り返さない
 - 各段落で evidence_bundle の用語を少なくとも1つは明示する
 - 資料にないことを大きく膨らませない
 - 因果、対比、具体例のどれかを最低1つ入れる
@@ -715,9 +722,9 @@ forbidden_patterns: {forbidden_patterns}
 {source_constraint}- 前半と自然につながる
 - {style_instruction}
 - {abstraction_instruction}
-- 目安として {int(target_chars * 0.85)} 字以上は書く
+- 目安として {int(target_chars * 0.90)} 字以上は書く
 """
-    return clean_text(call_text(client, model, "資料根拠に忠実な大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.40, max_output_tokens=5200))
+    return clean_text(call_text(client, model, "資料根拠に忠実で、前半の再説明を避けた大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.35, max_output_tokens=4200))
 
 
 def complete_section_if_truncated(client: OpenAI, model: str, theme: str, section_name: str, section_text: str, evidences: List[Evidence], strict_source_only: bool) -> str:
@@ -935,7 +942,7 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
         return report
     source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
     evidence_text = join_evidence_briefs(evidences, 6)
-    target_addition = max(900, min(shortage + 400, 2200))
+    target_addition = max(700, min(shortage + 250, 1400))
     prompt = f"""
 以下の本文は字数が不足しています。不足分を埋める追加段落だけを書いてください。
 追加段落のみ出力してください。
@@ -963,15 +970,17 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
 条件:
 - 追加段落のみ
 - 新しい論点を追加しない
-- 既存論点の補強、具体化、資料間接続の追加で伸ばす
-- 同じ内容の言い換え反復は禁止
+- まだ十分に展開していない論点の補足だけを行う
+- 既に詳しく説明した論点の言い換え再説明は禁止
 - 各段落で資料由来の概念を明示する
 {source_constraint}- 約{target_addition}字ぶんの中身を増やす
 """
-    addition = clean_text(call_text(client, model, "字数不足を補う追加段落だけを書く。本文のみ返す。", prompt, temperature=0.30, max_output_tokens=5200))
+    addition = clean_text(call_text(client, model, "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。", prompt, temperature=0.26, max_output_tokens=2800))
     if not addition:
         return report
-    return clean_text(report + "\n\n" + addition)
+    return clean_text(report + "
+
+" + addition)
 
 
 def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
@@ -981,7 +990,7 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
     evidence_text = join_evidence_briefs(evidences, 6)
     targets = build_length_targets(target_length, strict=strict_source_only)
     shortage = max(0, targets["min"] - len(report))
-    target_addition = max(800, min(shortage + 300, 1800))
+    target_addition = max(700, min(shortage + 250, 1300))
     prompt = f"""
 以下の本文はまだ字数が不足しています。続きを追加してください。本文のみ出力してください。
 
@@ -1000,14 +1009,17 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
 条件:
 - 本文のみ
 - 新しい論点を追加しない
-- 既存論点の掘り下げ、比較、補足例、まとめの強化で続ける
-- 途中で終わらず完結させる
+- 既存論点のうち、まだ浅い部分の比較・含意・限定条件だけを補う
+- 既に説明した内容の言い換え再説明は禁止
+- 最後は自然に終える
 {source_constraint}- 約{target_addition}字を目安に追記する
 """
-    continuation = clean_text(call_text(client, model, "不足字数を埋める続きを自然に書く。本文のみ返す。", prompt, temperature=0.28, max_output_tokens=3600))
+    continuation = clean_text(call_text(client, model, "不足字数を、未展開部分の補足だけで埋める続きを書く。本文のみ返す。", prompt, temperature=0.24, max_output_tokens=2600))
     if not continuation:
         return report
-    return clean_text(report + "\n\n" + continuation)
+    return clean_text(report + "
+
+" + continuation)
 
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int, strict_source_only: bool) -> str:
@@ -1022,16 +1034,17 @@ def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_
 - 本文のみ
 - 不自然な圧縮をしない
 - 資料固有語を残す
+- 明らかに重複している段落や言い換え反復を優先して削る
 - できれば {targets['max']} 字以下にする
 
 本文:
 {report}
 """
-    return clean_text(call_text(client, model, "文字数だけを自然に圧縮する。本文のみ返す。", prompt, temperature=0.2, max_output_tokens=4200))
+    return clean_text(call_text(client, model, "文字数と重複を同時に自然に圧縮する。本文のみ返す。", prompt, temperature=0.2, max_output_tokens=4200))
 
 
 def enforce_length_requirements(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
-    for _ in range(4):
+    for _ in range(3):
         status = length_band_status(report, target_length, strict=strict_source_only)
         if status == "short":
             report = append_report_if_too_short(client, model, theme, report, evidences, target_length, strict_source_only)
@@ -1041,6 +1054,33 @@ def enforce_length_requirements(client: OpenAI, model: str, theme: str, report: 
             report = compress_report_if_too_long(client, model, report, target_length, strict_source_only)
         break
     return report
+
+
+def deduplicate_report_pass(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int) -> str:
+    evidence_text = join_evidence_briefs(evidences, 6)
+    prompt = f"""
+以下のレポート本文について、論旨を保ったまま重複箇所だけを整理してください。本文のみ出力してください。
+
+課題文:
+{theme}
+
+参考根拠:
+{evidence_text}
+
+目標文字数:
+{target_length}
+
+条件:
+- 本文のみ
+- 同じ論点の言い換え反復を統合する
+- 後半で前半をなぞっている箇所を削る
+- 構成の流れは保つ
+- 資料固有語は残す
+
+本文:
+{report}
+"""
+    return clean_text(call_text(client, model, "長文レポートの重複だけを整理して締める。本文のみ返す。", prompt, temperature=0.18, max_output_tokens=4200))
 
 # ============================================================
 # Input shaping
@@ -1124,6 +1164,9 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
 
     report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=False)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
+    if target_length >= 6000:
+        report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
+        report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
     critique = critique_report(client, model, theme, report, selected)
     if critique.get("revision_needed", False) and int(critique.get("overall_score", 0)) < 84:
         report = rewrite_once(client, model, theme, report, critique, selected, style_mode, strict_source_only=False)
@@ -1191,6 +1234,8 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
     critique2 = critique_report(client, model, theme, report, selected)
     report = humanize_if_needed(client, model, theme, report, critique2)
+    if target_length >= 6000:
+        report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
     critique_final = critique_report(client, model, theme, report, selected)
 
