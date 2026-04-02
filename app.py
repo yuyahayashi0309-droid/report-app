@@ -35,6 +35,21 @@ st.markdown(
         margin-top: 0.35rem;
         font-size: 0.84rem;
     }
+    .stage-box {
+        border: 1px solid rgba(120,120,120,0.14);
+        border-radius: 18px;
+        padding: 0.8rem 0.9rem;
+        margin-top: 0.6rem;
+        background: rgba(255,255,255,0.02);
+    }
+    .stage-title {
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+    .stage-sub {
+        opacity: 0.8;
+        font-size: 0.94rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -54,6 +69,7 @@ st.markdown(
             <span class="pill">根拠可視化</span>
             <span class="pill">字数補正</span>
             <span class="pill">10000字対応</span>
+            <span class="pill">進捗UI改善版</span>
         </div>
     </div>
     """,
@@ -97,6 +113,17 @@ HIGH_SETTINGS = {
     "min_source_terms": 5,
 }
 
+FLOW_STEPS = [
+    "PDF抽出",
+    "候補選定",
+    "根拠精査",
+    "論点設計",
+    "本文生成",
+    "字数補正",
+    "重複整理",
+    "完成",
+]
+
 # ============================================================
 # Data classes
 # ============================================================
@@ -137,6 +164,71 @@ class Evidence:
     final_score: float
     reason: str
     duplicate_group: int = -1
+
+
+# ============================================================
+# Progress UI helpers
+# ============================================================
+class ProgressUI:
+    def __init__(self, mode: str):
+        self.mode = mode
+        self.box = st.container()
+        self.progress_bar = self.box.progress(0.0)
+        self.status = self.box.empty()
+        self.stage = self.box.empty()
+        self.detail = self.box.empty()
+        self.metric_slot = self.box.empty()
+        self.notes = self.box.empty()
+        self.current_step_index = 0
+        self.render_stage("待機中", "入力を確認しています。", 0)
+
+    def render_stage(self, title: str, subtitle: str, progress_value: float, details: str = "") -> None:
+        progress_value = max(0.0, min(1.0, progress_value))
+        self.progress_bar.progress(progress_value)
+        self.status.markdown(f"**{self.mode}モード実行中**")
+        self.stage.markdown(
+            f"""
+            <div class=\"stage-box\">
+                <div class=\"stage-title\">{html.escape(title)}</div>
+                <div class=\"stage-sub\">{html.escape(subtitle)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if details:
+            self.detail.caption(details)
+        else:
+            self.detail.empty()
+
+    def set_flow_step(self, step_name: str, subtitle: str = "", details: str = "") -> None:
+        try:
+            idx = FLOW_STEPS.index(step_name)
+        except ValueError:
+            idx = self.current_step_index
+        self.current_step_index = idx
+        base_progress = idx / max(len(FLOW_STEPS), 1)
+        self.render_stage(step_name, subtitle or f"{step_name}を実行しています。", base_progress, details)
+
+    def subprogress(self, done: int, total: int, label: str) -> None:
+        total = max(total, 1)
+        local = done / total
+        base = self.current_step_index / len(FLOW_STEPS)
+        next_base = (self.current_step_index + 1) / len(FLOW_STEPS)
+        overall = base + (next_base - base) * local
+        self.render_stage(FLOW_STEPS[self.current_step_index], label, overall)
+
+    def metrics(self, pairs: List[Tuple[str, Any]]) -> None:
+        cols = self.metric_slot.columns(len(pairs)) if pairs else []
+        for col, (label, value) in zip(cols, pairs):
+            col.metric(label, value)
+
+    def note(self, text: str) -> None:
+        self.notes.info(text)
+
+    def finish(self, text: str = "生成が完了しました。") -> None:
+        self.render_stage("完成", text, 1.0)
+        self.notes.success(text)
+
 
 # ============================================================
 # API helpers
@@ -222,6 +314,7 @@ def call_text(
         ],
     )
     return response.output_text.strip()
+
 
 # ============================================================
 # Text helpers
@@ -420,6 +513,7 @@ def strict_source_constraint_text(strict_source_only: bool, hard: bool = False) 
         return "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n- 自分の一般知識で補った具体例は禁止\n"
     return "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
 
+
 # ============================================================
 # PDF extraction
 # ============================================================
@@ -437,7 +531,7 @@ def block_texts_from_page(page) -> List[Tuple[int, str]]:
 
 
 def merge_blocks_semantically(blocks: List[Tuple[int, str]], min_chars: int, max_chars: int) -> List[Tuple[str, str]]:
-    chunks = []
+    chunks: List[Tuple[str, str]] = []
     current_idxs: List[int] = []
     current_texts: List[str] = []
 
@@ -494,12 +588,13 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                 )
     return chunks
 
+
 # ============================================================
 # Ranking and evidence
 # ============================================================
 def local_prefilter(chunks: List[Chunk], theme: str, keep: int) -> List[Chunk]:
     theme_terms = lexical_terms(theme, top_k=12)
-    scored = []
+    scored: List[Tuple[float, Chunk]] = []
     for chunk in chunks:
         score = theme_overlap_score(theme_terms, chunk.lexical_terms, chunk.text) + 0.7 * chunk.specificity_hint
         chunk.local_score = score
@@ -589,10 +684,11 @@ def select_representatives(evidences: List[Evidence], limit: int) -> List[Eviden
     grouped: Dict[int, List[Evidence]] = defaultdict(list)
     for ev in evidences:
         grouped[ev.duplicate_group].append(ev)
-    reps = []
+    reps: List[Evidence] = []
     for _, items in grouped.items():
         reps.append(sorted(items, key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)[0])
     return sorted(reps, key=lambda x: (x.final_score, x.precise_score, x.usefulness_score), reverse=True)[:limit]
+
 
 # ============================================================
 # Planning / generation
@@ -630,15 +726,7 @@ def build_fallback_blueprint(evidences: List[Evidence], target_length: int, sect
         "垂直的チャネル・コンフリクト",
         "総合考察と結論",
     ]
-    roles = [
-        "definition",
-        "mechanism",
-        "structure_change",
-        "evidence",
-        "role_change",
-        "conflict_adjustment",
-        "conclusion",
-    ]
+    roles = ["definition", "mechanism", "structure_change", "evidence", "role_change", "conflict_adjustment", "conclusion"]
     char_base = max(700, target_length // max(sections_count, 1))
     ids = [ev.chunk_id for ev in evidences[: max(2, min(len(evidences), sections_count * 2))]]
     sections: List[Dict[str, Any]] = []
@@ -649,12 +737,13 @@ def build_fallback_blueprint(evidences: List[Evidence], target_length: int, sect
             must_terms.extend(evidences[i].terminology[:3])
         if len(must_terms) < 2:
             must_terms.extend(["マーケティングチャネル", "流通業者"])
+        sec_name = section_names[i] if i < len(section_names) else f"第{i+1}節"
         sections.append(
             {
-                "name": section_names[i] if i < len(section_names) else f"第{i+1}節",
+                "name": sec_name,
                 "role": roles[i] if i < len(roles) else "analysis",
-                "objective": f"{section_names[i] if i < len(section_names) else f'第{i+1}節'}に関する論点を整理する",
-                "key_claim": f"{section_names[i] if i < len(section_names) else f'第{i+1}節'}を通じて、科学技術の進展がチャネル設計に与える影響を示す",
+                "objective": f"{sec_name}に関する論点を整理する",
+                "key_claim": f"{sec_name}を通じて、科学技術の進展がチャネル設計に与える影響を示す",
                 "evidence_ids": ev_slice,
                 "must_use_terms": must_terms[:5],
                 "avoid_overlap_with": [s["name"] for s in sections[-2:]],
@@ -924,6 +1013,7 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
     paragraphs[-1] = new_last
     return "\n\n".join(paragraphs)
 
+
 # ============================================================
 # Critique and length control
 # ============================================================
@@ -1169,6 +1259,7 @@ def deduplicate_report_pass(client: OpenAI, model: str, theme: str, report: str,
 """
     return clean_text(call_text(client, model, "長文レポートの重複だけを整理して締める。本文のみ返す。", prompt, temperature=0.18, max_output_tokens=4200))
 
+
 # ============================================================
 # Theme shaping
 # ============================================================
@@ -1191,27 +1282,41 @@ def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, 
     helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
     return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
 
+
 # ============================================================
 # Pipelines
 # ============================================================
-def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str) -> Dict[str, Any]:
+def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str, progress: ProgressUI) -> Dict[str, Any]:
     cfg = FAST_SETTINGS
+    progress.set_flow_step("PDF抽出", "PDFから意味チャンクを取り出しています。")
     chunks = extract_chunks(uploaded_files, cfg["chunk_char_min"], cfg["chunk_char_max"])
     if not chunks:
         raise ValueError("有効なテキストを抽出できませんでした。PDFが画像だけの可能性があります。")
+    progress.metrics([("抽出チャンク", len(chunks)), ("目標文字数", target_length)])
 
+    progress.set_flow_step("候補選定", "課題文との関連が高い候補を絞っています。")
     prefiltered = local_prefilter(chunks, theme, keep=cfg["local_keep"])
+    progress.metrics([("抽出チャンク", len(chunks)), ("ローカル候補", len(prefiltered)), ("API精査上限", cfg["api_keep"])])
+
+    progress.set_flow_step("根拠精査", "上位候補だけをAPIで精査しています。")
     evidences: List[Evidence] = []
-    for chunk in prefiltered[: min(cfg["api_keep"], len(prefiltered))]:
+    total = min(cfg["api_keep"], len(prefiltered))
+    for i, chunk in enumerate(prefiltered[:total], start=1):
         evidences.append(build_evidence_one_call(client, model, theme, chunk))
+        progress.subprogress(i, total, f"根拠精査 {i}/{total}")
 
     evidences.sort(key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)
     evidences = cluster_duplicates(evidences, threshold=0.42)
     selected = select_representatives(evidences, limit=cfg["final_keep"])
+    progress.metrics([("精査件数", len(evidences)), ("採用根拠", len(selected)), ("高速最終候補", cfg["final_keep"])])
+
+    progress.set_flow_step("論点設計", "論点マップを作っています。")
     argument_map = build_argument_map(client, model, theme, selected, points=3)
 
+    progress.set_flow_step("本文生成", "本文を組み立てています。")
     split_count = section_split_count(target_length, mode="高速")
     if split_count == 1:
+        progress.note("高速モードのため、一発生成に近い流れで本文を作っています。")
         report = generate_single_pass_report(client, model, theme, target_length, argument_map, selected, style_mode, abstraction_mode, strict_source_only=False)
     else:
         blueprint = build_blueprint(client, model, theme, selected, argument_map, target_length, sections_count=split_count)
@@ -1221,47 +1326,67 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         parts: List[str] = []
         used_terms: List[str] = []
         previous = ""
-        for i, section in enumerate(sections):
+        total_sec = max(len(sections), 1)
+        for i, section in enumerate(sections, start=1):
             bundle = section_evidence_bundle(section, lookup)
             part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=False)
-            part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i+1}")), part, selected, strict_source_only=False)
+            part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i}")), part, selected, strict_source_only=False)
             parts.append(part)
             previous = "\n\n".join(parts)
             used_terms.extend(lexical_terms(part, top_k=8))
+            progress.subprogress(i, total_sec, f"本文生成 {i}/{total_sec} 節")
         report = clean_text("\n\n".join(parts))
         report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
 
+    progress.set_flow_step("字数補正", "文字数と資料語の不足を整えています。")
     report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=False)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
+
+    progress.set_flow_step("重複整理", "長文時のみ重複を削っています。")
     if target_length >= 6000:
         report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
         report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
+
     critique = critique_report(client, model, theme, report, selected)
     if critique.get("revision_needed", False) and int(critique.get("overall_score", 0)) < 84:
+        progress.note("高速版の品質底上げのため、最小限の改稿を1回だけ入れています。")
         report = rewrite_once(client, model, theme, report, critique, selected, style_mode, strict_source_only=False)
         report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
         critique = critique_report(client, model, theme, report, selected)
 
+    progress.finish("高速モードの生成が完了しました。")
     return {"mode": "高速", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "report": report, "critique": critique}
 
 
-def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str) -> Dict[str, Any]:
+def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str, progress: ProgressUI) -> Dict[str, Any]:
     cfg = HIGH_SETTINGS
+    progress.set_flow_step("PDF抽出", "PDFを丁寧に分解して意味チャンクを作っています。")
     chunks = extract_chunks(uploaded_files, cfg["chunk_char_min"], cfg["chunk_char_max"])
     if not chunks:
         raise ValueError("有効なテキストを抽出できませんでした。PDFが画像だけの可能性があります。")
+    progress.metrics([("抽出チャンク", len(chunks)), ("目標文字数", target_length), ("モード", "ハイエンド")])
 
+    progress.set_flow_step("候補選定", "長文向けに候補を厚めに残しています。")
     prefiltered = local_prefilter(chunks, theme, keep=cfg["local_keep"])
+    progress.metrics([("抽出チャンク", len(chunks)), ("ローカル候補", len(prefiltered)), ("API精査上限", cfg["api_keep"])])
+
+    progress.set_flow_step("根拠精査", "採用候補を精査して中間表現に変換しています。")
     evidences: List[Evidence] = []
-    for chunk in prefiltered[: min(cfg["api_keep"], len(prefiltered))]:
+    total = min(cfg["api_keep"], len(prefiltered))
+    for i, chunk in enumerate(prefiltered[:total], start=1):
         evidences.append(build_evidence_one_call(client, model, theme, chunk))
+        progress.subprogress(i, total, f"根拠精査 {i}/{total}")
 
     evidences.sort(key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)
     evidences = cluster_duplicates(evidences, threshold=0.40)
     selected = select_representatives(evidences, limit=cfg["final_keep"])
+    progress.metrics([("精査件数", len(evidences)), ("採用根拠", len(selected)), ("長文節数", section_split_count(target_length, mode='ハイエンド'))])
+
+    progress.set_flow_step("論点設計", "設計図と節役割を組み立てています。")
     argument_map = build_argument_map(client, model, theme, selected, points=5)
     blueprint = build_blueprint(client, model, theme, selected, argument_map, target_length, sections_count=section_split_count(target_length, mode="ハイエンド"))
 
+    progress.set_flow_step("本文生成", "節ごとに本文を生成しています。")
     lookup = evidence_lookup(selected)
     thesis = str(blueprint.get("thesis", ""))
     sections = blueprint.get("sections", [])
@@ -1271,29 +1396,40 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
     parts: List[str] = []
     used_terms: List[str] = []
     previous = ""
-    for i, section in enumerate(sections):
+    total_sec = max(len(sections), 1)
+    for i, section in enumerate(sections, start=1):
         bundle = section_evidence_bundle(section, lookup)
         part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=True)
-        part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i+1}")), part, selected, strict_source_only=True)
+        part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i}")), part, selected, strict_source_only=True)
         parts.append(part)
         previous = "\n\n".join(parts)
         used_terms.extend(lexical_terms(part, top_k=8))
+        progress.subprogress(i, total_sec, f"本文生成 {i}/{total_sec} 節")
 
     report = clean_text("\n\n".join(parts))
+
+    progress.set_flow_step("字数補正", "資料語の不足と文字数のズレを整えています。")
     report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=True)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
     report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
+
     critique1 = critique_report(client, model, theme, report, selected)
     if critique1.get("revision_needed", False) or int(critique1.get("overall_score", 0)) < 88 or critique1.get("external_example_risk", 0) >= 1:
+        progress.note("提出向け品質を狙うため、必要な場合だけ改稿を入れています。")
         report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
+
     critique2 = critique_report(client, model, theme, report, selected)
     report = humanize_if_needed(client, model, theme, report, critique2)
+
+    progress.set_flow_step("重複整理", "長文でのループ感を抑えるため重複を整理しています。")
     if target_length >= 6000:
         report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
     critique_final = critique_report(client, model, theme, report, selected)
 
+    progress.finish("ハイエンドモードの生成が完了しました。")
     return {"mode": "ハイエンド", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "blueprint": blueprint, "report": report, "critique": critique_final}
+
 
 # ============================================================
 # Session state / UI
@@ -1352,11 +1488,12 @@ if fast_clicked or high_clicked:
     validate_inputs(api_key, uploaded_files, theme, confirm_generate)
     client = get_client(api_key)
     effective_theme = build_user_guidance(theme, focus_points, preferred_concepts, excluded_topics, source_scope)
+    progress_ui = ProgressUI("高速" if fast_clicked else "ハイエンド")
     try:
         if fast_clicked:
-            result = run_fast_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
+            result = run_fast_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode, progress_ui)
         else:
-            result = run_high_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode)
+            result = run_high_pipeline(client, model_name, effective_theme, uploaded_files, int(target_length), style_mode, abstraction_mode, progress_ui)
         result["effective_theme"] = effective_theme
         st.session_state.result = result
         st.session_state.theme_snapshot = theme
