@@ -10,14 +10,17 @@ import fitz
 import streamlit as st
 from openai import OpenAI
 
+# ============================================================
+# Page setup
+# ============================================================
 st.set_page_config(page_title="ReportFlow Pro", page_icon="📝", layout="wide")
 
 st.markdown(
     """
     <style>
-    .block-container { max-width: 1180px; padding-top: 1.2rem; padding-bottom: 4rem; }
+    .block-container { max-width: 1180px; padding-top: 1.1rem; padding-bottom: 4rem; }
     .hero {
-        padding: 1.25rem 1.35rem;
+        padding: 1.2rem 1.3rem;
         border: 1px solid rgba(120,120,120,0.16);
         border-radius: 22px;
         margin-bottom: 1rem;
@@ -41,19 +44,25 @@ st.markdown(
     """
     <div class="hero">
         <h1 style="margin-bottom:0.18rem;">📝 ReportFlow Pro</h1>
-        <div style="opacity:0.8;">高速モードは待てる速度、ハイエンドモードは資料密着の提出前仕上げを狙います。</div>
+        <div style="opacity:0.8;">
+            講義PDFを読み込み、課題文に合わせて資料固有の概念を活かしたレポート本文を生成します。
+            高速モードは待てる速度、ハイエンドモードは長文・提出前仕上げ向けです。
+        </div>
         <div style="margin-top:0.55rem;">
             <span class="pill">高速モード</span>
             <span class="pill">ハイエンドモード</span>
-            <span class="pill">意味チャンク抽出</span>
             <span class="pill">根拠可視化</span>
-            <span class="pill">10,000字対応</span>
+            <span class="pill">字数補正</span>
+            <span class="pill">10000字対応</span>
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+# ============================================================
+# Constants
+# ============================================================
 FAST_DEFAULT_MODEL = "gpt-4.1-mini"
 HIGH_DEFAULT_MODEL = "gpt-4.1-mini"
 
@@ -72,7 +81,7 @@ ABSTRACT_TERMS = {
 
 FAST_SETTINGS = {
     "chunk_char_min": 320,
-    "chunk_char_max": 1250,
+    "chunk_char_max": 1200,
     "local_keep": 18,
     "api_keep": 10,
     "final_keep": 7,
@@ -81,14 +90,16 @@ FAST_SETTINGS = {
 
 HIGH_SETTINGS = {
     "chunk_char_min": 220,
-    "chunk_char_max": 1100,
+    "chunk_char_max": 1000,
     "local_keep": 30,
     "api_keep": 18,
     "final_keep": 10,
     "min_source_terms": 5,
 }
 
-
+# ============================================================
+# Data classes
+# ============================================================
 @dataclass
 class Chunk:
     chunk_id: str
@@ -127,10 +138,12 @@ class Evidence:
     reason: str
     duplicate_group: int = -1
 
-
+# ============================================================
+# API helpers
+# ============================================================
 def get_api_key() -> str:
     secrets_key = st.secrets.get("OPENAI_API_KEY", None)
-    api_key_input = st.sidebar.text_input("OpenAI APIキー（ローカル確認用）", type="password")
+    api_key_input = st.sidebar.text_input("OpenAI APIキー", type="password")
     return (secrets_key or api_key_input or "").strip()
 
 
@@ -164,7 +177,9 @@ def call_text(client: OpenAI, model: str, system: str, user_prompt: str, tempera
     )
     return response.output_text.strip()
 
-
+# ============================================================
+# Text helpers
+# ============================================================
 def normalize_space(text: str) -> str:
     text = html.unescape(text or "")
     text = text.replace("\u3000", " ")
@@ -176,8 +191,7 @@ def normalize_space(text: str) -> str:
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    for bad in ["###", "##", "#", "* ", "- "]:
-        text = text.replace(bad, "")
+    text = text.replace("###", "").replace("##", "").replace("#", "")
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -310,6 +324,18 @@ def detect_external_example_risk(text: str, evidences: List[Evidence]) -> int:
     return 3
 
 
+def is_truncated_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    bad_endings = ("は", "が", "を", "に", "で", "と", "、", "・", "（", "(", "の", "も", "や", "より", "し", "する", "いる")
+    if stripped.endswith(bad_endings):
+        return True
+    if not stripped.endswith(("。", "！", "？", ".", "!", "?", "」", "』", ")", "）")):
+        return True
+    return False
+
+
 def render_evidence_brief(ev: Evidence) -> str:
     return textwrap.dedent(
         f"""
@@ -354,7 +380,9 @@ def strict_source_constraint_text(strict_source_only: bool, hard: bool = False) 
         return "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n- 自分の一般知識で補った具体例は禁止\n"
     return "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
 
-
+# ============================================================
+# PDF extraction
+# ============================================================
 def block_texts_from_page(page) -> List[Tuple[int, str]]:
     blocks = page.get_text("blocks")
     out = []
@@ -426,7 +454,9 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                 )
     return chunks
 
-
+# ============================================================
+# Ranking and evidence
+# ============================================================
 def local_prefilter(chunks: List[Chunk], theme: str, keep: int) -> List[Chunk]:
     theme_terms = lexical_terms(theme, top_k=12)
     scored = []
@@ -524,7 +554,9 @@ def select_representatives(evidences: List[Evidence], limit: int) -> List[Eviden
         reps.append(sorted(items, key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)[0])
     return sorted(reps, key=lambda x: (x.final_score, x.precise_score, x.usefulness_score), reverse=True)[:limit]
 
-
+# ============================================================
+# Planning
+# ============================================================
 def build_argument_map(client: OpenAI, model: str, theme: str, evidences: List[Evidence], points: int = 4) -> str:
     source = join_evidence_briefs(evidences, 10)
     prompt = f"""
@@ -564,7 +596,7 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
     - evidence_ids: chunk_id配列（1〜4個）
     - must_use_terms: 概念配列（2〜5個）
     - avoid_overlap_with: 節名配列
-    - forbidden_patterns: 配列（抽象語の反復や避ける表現）
+    - forbidden_patterns: 配列
     - target_chars: 目安文字数
 
 条件:
@@ -573,7 +605,6 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
 - 少なくとも1節は資料間のつながりや対比を扱う
 - 一般論で水増ししない
 - 長さ配分は目標文字数に合わせる
-- 各節は前節から論理を前進させる
 
 課題文:
 {theme}
@@ -589,7 +620,9 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
 """
     return call_json(client, model, "大学レポートの設計図を作る。JSONのみ返す。", prompt, temperature=0.2, max_output_tokens=3200)
 
-
+# ============================================================
+# Generation
+# ============================================================
 def generate_single_pass_report(client: OpenAI, model: str, theme: str, target_length: int, argument_map: str, evidences: List[Evidence], style_mode: str, abstraction_mode: str, strict_source_only: bool) -> str:
     style_instruction = {"標準": "自然で読みやすい文体にする。", "やや硬め": "少しフォーマルで簡潔な文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
     abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化して上位概念で整理する。", "抽象度低め": "やや具体的にし、資料上の概念や事例を厚めに使う。"}[abstraction_mode]
@@ -687,6 +720,39 @@ forbidden_patterns: {forbidden_patterns}
     return clean_text(call_text(client, model, "資料根拠に忠実な大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.40, max_output_tokens=5200))
 
 
+def complete_section_if_truncated(client: OpenAI, model: str, theme: str, section_name: str, section_text: str, evidences: List[Evidence], strict_source_only: bool) -> str:
+    if not is_truncated_text(section_text):
+        return section_text
+    source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
+    evidence_text = join_evidence_briefs(evidences, 4)
+    prompt = f"""
+以下の本文は途中で切れている可能性があります。続きを短く補完して、この節を自然に完結させてください。
+補完部分のみ出力してください。
+
+課題文:
+{theme}
+
+節名:
+{section_name}
+
+参考根拠:
+{evidence_text}
+
+現在の本文:
+{section_text[-3500:]}
+
+条件:
+- 補完部分のみ
+- 新しい論点を追加しない
+- 既存の議論を自然に完結させる
+{source_constraint}- 300〜700字程度でまとめる
+"""
+    addition = clean_text(call_text(client, model, "途中で切れた本文を自然に完結させる補完文を書く。本文のみ返す。", prompt, temperature=0.25, max_output_tokens=1600))
+    if not addition:
+        return section_text
+    return clean_text(section_text + "\n\n" + addition)
+
+
 def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evidences: List[Evidence], min_terms: int, strict_source_only: bool) -> str:
     important = important_terms_from_evidences(evidences, top_k=12)
     missing = [t for t in important if t not in text][:min_terms]
@@ -760,7 +826,9 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
     paragraphs[-1] = new_last
     return "\n\n".join(paragraphs)
 
-
+# ============================================================
+# Critique and length control
+# ============================================================
 def critique_report(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence]) -> Dict[str, Any]:
     ref_terms = important_terms_from_evidences(evidences, top_k=12)
     prompt = f"""
@@ -903,52 +971,7 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
     addition = clean_text(call_text(client, model, "字数不足を補う追加段落だけを書く。本文のみ返す。", prompt, temperature=0.30, max_output_tokens=5200))
     if not addition:
         return report
-    return clean_text(report + "" + addition)
-
-
-def is_truncated_text(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    bad_endings = ("は", "が", "を", "に", "で", "と", "、", "・", "（", "(" , "の", "も", "や", "より", "について", "によ", "し", "する", "いる")
-    if stripped.endswith(bad_endings):
-        return True
-    if not stripped.endswith(("。", "！", "？", ".", "!", "?", "」", "』", ")", "）")):
-        return True
-    return False
-
-
-def complete_section_if_truncated(client: OpenAI, model: str, theme: str, section_name: str, section_text: str, evidences: List[Evidence], strict_source_only: bool) -> str:
-    if not is_truncated_text(section_text):
-        return section_text
-    source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
-    evidence_text = join_evidence_briefs(evidences, 4)
-    prompt = f"""
-以下の本文は途中で切れている可能性があります。続きを短く補完して、この節を自然に完結させてください。
-補完部分のみ出力してください。
-
-課題文:
-{theme}
-
-節名:
-{section_name}
-
-参考根拠:
-{evidence_text}
-
-現在の本文:
-{section_text[-3500:]}
-
-条件:
-- 補完部分のみ
-- 新しい論点を追加しない
-- 既存の議論を自然に完結させる
-{source_constraint}- 300〜700字程度でまとめる
-"""
-    addition = clean_text(call_text(client, model, "途中で切れた本文を自然に完結させる補完文を書く。本文のみ返す。", prompt, temperature=0.25, max_output_tokens=1600))
-    if not addition:
-        return section_text
-    return clean_text(section_text + "" + addition)
+    return clean_text(report + "\n\n" + addition)
 
 
 def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
@@ -958,6 +981,7 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
     evidence_text = join_evidence_briefs(evidences, 6)
     targets = build_length_targets(target_length, strict=strict_source_only)
     shortage = max(0, targets["min"] - len(report))
+    target_addition = max(800, min(shortage + 300, 1800))
     prompt = f"""
 以下の本文はまだ字数が不足しています。続きを追加してください。本文のみ出力してください。
 
@@ -978,12 +1002,12 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
 - 新しい論点を追加しない
 - 既存論点の掘り下げ、比較、補足例、まとめの強化で続ける
 - 途中で終わらず完結させる
-{source_constraint}- 約{max(800, min(shortage + 300, 1800))}字を目安に追記する
+{source_constraint}- 約{target_addition}字を目安に追記する
 """
     continuation = clean_text(call_text(client, model, "不足字数を埋める続きを自然に書く。本文のみ返す。", prompt, temperature=0.28, max_output_tokens=3600))
     if not continuation:
         return report
-    return clean_text(report + "" + continuation)
+    return clean_text(report + "\n\n" + continuation)
 
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int, strict_source_only: bool) -> str:
@@ -1018,7 +1042,9 @@ def enforce_length_requirements(client: OpenAI, model: str, theme: str, report: 
         break
     return report
 
-
+# ============================================================
+# Input shaping
+# ============================================================
 def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
     parts = [f"課題文: {theme.strip()}"]
     if focus_points.strip():
@@ -1038,7 +1064,9 @@ def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, 
     helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
     return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
 
-
+# ============================================================
+# Pipelines
+# ============================================================
 def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str) -> Dict[str, Any]:
     cfg = FAST_SETTINGS
     with st.spinner("高速モードでPDFを解析中..."):
@@ -1078,16 +1106,16 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
             blueprint = build_blueprint(client, model, theme, selected, argument_map, target_length, sections_count=split_count)
             lookup = evidence_lookup(selected)
             thesis = str(blueprint.get("thesis", ""))
+            sections = blueprint.get("sections", [])
             parts = []
             used_terms: List[str] = []
             previous = ""
-            sections = blueprint.get("sections", [])
             bar = st.progress(0, text="節ごとに短く分けて生成しています")
             for i, section in enumerate(sections):
-            bundle = section_evidence_bundle(section, lookup)
-            part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=True)
-            part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i+1}")), part, selected, strict_source_only=True)
-            parts.append(part)
+                bundle = section_evidence_bundle(section, lookup)
+                part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=False)
+                part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i+1}")), part, selected, strict_source_only=False)
+                parts.append(part)
                 previous = "\n\n".join(parts)
                 used_terms.extend(lexical_terms(part, top_k=8))
                 bar.progress((i + 1) / len(sections), text=f"節生成 {i + 1}/{len(sections)}")
@@ -1148,6 +1176,7 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
         for i, section in enumerate(sections):
             bundle = section_evidence_bundle(section, lookup)
             part = generate_section_text(client, model, theme, thesis, section, bundle, previous, used_terms, style_mode, abstraction_mode, strict_source_only=True)
+            part = complete_section_if_truncated(client, model, theme, str(section.get("name", f"section_{i+1}")), part, selected, strict_source_only=True)
             parts.append(part)
             previous = "\n\n".join(parts)
             used_terms.extend(lexical_terms(part, top_k=8))
@@ -1167,12 +1196,16 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
 
     return {"mode": "ハイエンド", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "blueprint": blueprint, "report": report, "critique": critique_final}
 
-
+# ============================================================
+# Session state
+# ============================================================
 for key, default in {"result": None, "theme_snapshot": ""}.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-
+# ============================================================
+# UI
+# ============================================================
 left, right = st.columns([1.18, 0.82], gap="large")
 
 with left:
@@ -1205,7 +1238,9 @@ if broad_theme_warning(theme, focus_points, preferred_concepts, excluded_topics,
 if target_length > 4000 and mode == "高速":
     st.warning("高速モードは長文に不向きです。4000字超、とくに6000〜10000字はハイエンドモードを推奨します。")
 
-
+# ============================================================
+# Main run
+# ============================================================
 def validate_inputs(api_key_value: str, uploaded, theme_text: str, confirm_flag: bool) -> None:
     if not confirm_flag:
         st.warning("生成前にチェックを入れてください。")
@@ -1238,7 +1273,9 @@ if fast_clicked or high_clicked:
         st.exception(e)
         st.stop()
 
-
+# ============================================================
+# Render results
+# ============================================================
 if st.session_state.result:
     result = st.session_state.result
     report = result["report"]
