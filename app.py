@@ -983,9 +983,7 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
     continuation = clean_text(call_text(client, model, "不足字数を埋める続きを自然に書く。本文のみ返す。", prompt, temperature=0.28, max_output_tokens=3600))
     if not continuation:
         return report
-    return clean_text(report + "
-
-" + continuation)
+    return clean_text(report + "" + continuation)
 
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int, strict_source_only: bool) -> str:
