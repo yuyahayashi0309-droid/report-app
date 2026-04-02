@@ -948,9 +948,7 @@ def complete_section_if_truncated(client: OpenAI, model: str, theme: str, sectio
     addition = clean_text(call_text(client, model, "途中で切れた本文を自然に完結させる補完文を書く。本文のみ返す。", prompt, temperature=0.25, max_output_tokens=1600))
     if not addition:
         return section_text
-    return clean_text(section_text + "
-
-" + addition)
+    return clean_text(section_text + "" + addition)
 
 
 def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
