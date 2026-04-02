@@ -903,9 +903,7 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
     addition = clean_text(call_text(client, model, "字数不足を補う追加段落だけを書く。本文のみ返す。", prompt, temperature=0.30, max_output_tokens=5200))
     if not addition:
         return report
-    return clean_text(report + "
-
-" + addition)
+    return clean_text(report + "" + addition)
 
 
 def is_truncated_text(text: str) -> bool:
