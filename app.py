@@ -978,9 +978,7 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
     addition = clean_text(call_text(client, model, "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。", prompt, temperature=0.26, max_output_tokens=2800))
     if not addition:
         return report
-    return clean_text(report + "
-
-" + addition)
+    return clean_text(report + "" + addition)
 
 
 def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
