@@ -151,7 +151,14 @@ def get_client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-def call_json(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.2, max_output_tokens: int = 2200) -> Dict[str, Any]:
+def call_json(
+    client: OpenAI,
+    model: str,
+    system: str,
+    user_prompt: str,
+    temperature: float = 0.2,
+    max_output_tokens: int = 2200,
+) -> Dict[str, Any]:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -165,7 +172,14 @@ def call_json(client: OpenAI, model: str, system: str, user_prompt: str, tempera
     return json.loads(response.output_text.strip())
 
 
-def call_text(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.35, max_output_tokens: int = 3200) -> str:
+def call_text(
+    client: OpenAI,
+    model: str,
+    system: str,
+    user_prompt: str,
+    temperature: float = 0.35,
+    max_output_tokens: int = 3200,
+) -> str:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -309,7 +323,10 @@ def count_abstract_term_hits(text: str) -> int:
 
 
 def detect_external_example_risk(text: str, evidences: List[Evidence]) -> int:
-    allowed_text = " ".join(ev.topic + " " + ev.proposition + " " + ev.evidence + " " + ev.example + " " + " ".join(ev.terminology) for ev in evidences)
+    allowed_text = " ".join(
+        ev.topic + " " + ev.proposition + " " + ev.evidence + " " + ev.example + " " + " ".join(ev.terminology)
+        for ev in evidences
+    )
     names = re.findall(r"\b[A-Z][A-Za-z&\-]{2,}(?:\s+[A-Z][A-Za-z&\-]{2,})*\b", text)
     risk = 0
     for n in names[:20]:
@@ -975,10 +992,19 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
 - 各段落で資料由来の概念を明示する
 {source_constraint}- 約{target_addition}字ぶんの中身を増やす
 """
-    addition = clean_text(call_text(client, model, "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。", prompt, temperature=0.26, max_output_tokens=2800))
+    addition = clean_text(
+        call_text(
+            client,
+            model,
+            "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。",
+            prompt,
+            temperature=0.26,
+            max_output_tokens=2800,
+        )
+    )
     if not addition:
         return report
-    return clean_text(report + "" + addition)
+    return clean_text(report + "\n\n" + addition)
 
 
 def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
@@ -1012,12 +1038,19 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
 - 最後は自然に終える
 {source_constraint}- 約{target_addition}字を目安に追記する
 """
-    continuation = clean_text(call_text(client, model, "不足字数を、未展開部分の補足だけで埋める続きを書く。本文のみ返す。", prompt, temperature=0.24, max_output_tokens=2600))
+    continuation = clean_text(
+        call_text(
+            client,
+            model,
+            "不足字数を、未展開部分の補足だけで埋める続きを書く。本文のみ返す。",
+            prompt,
+            temperature=0.24,
+            max_output_tokens=2600,
+        )
+    )
     if not continuation:
         return report
-    return clean_text(report + "
-
-" + continuation)
+    return clean_text(report + "\n\n" + continuation)
 
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int, strict_source_only: bool) -> str:
@@ -1373,6 +1406,7 @@ if st.session_state.result:
                     st.write(f"evidence_ids: {', '.join(sec.get('evidence_ids', []))}")
                     st.write(f"avoid_overlap_with: {', '.join(sec.get('avoid_overlap_with', []))}")
                     st.write(f"forbidden_patterns: {', '.join(sec.get('forbidden_patterns', []))}")
+                    st.write(f"must_not_repeat: {', '.join(sec.get('must_not_repeat', []))}")
 
     with tab4:
         st.subheader("内部評価")
