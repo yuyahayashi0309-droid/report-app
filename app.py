@@ -70,6 +70,7 @@ st.markdown(
             <span class="pill">字数補正</span>
             <span class="pill">10000字対応</span>
             <span class="pill">長文ループ改善版</span>
+            <span class="pill">未完文対策版</span>
         </div>
     </div>
     """,
@@ -481,13 +482,65 @@ def detect_external_example_risk(text: str, evidences: List[Evidence]) -> int:
 
 
 def is_truncated_text(text: str) -> bool:
-    stripped = text.strip()
+    stripped = (text or "").strip()
     if not stripped:
         return False
-    bad_endings = ("は", "が", "を", "に", "で", "と", "、", "・", "（", "(", "の", "も", "や", "より", "し", "する", "いる")
+
+    bad_endings = (
+        "は", "が", "を", "に", "で", "と", "へ", "も", "の",
+        "、", "・", "（", "(", "「", "『",
+        "より", "や", "し", "ため", "について", "として",
+        "する", "した", "して", "いる", "なり", "可能", "必要", "柔軟"
+    )
     if stripped.endswith(bad_endings):
         return True
-    return not stripped.endswith(("。", "！", "？", ".", "!", "?", "」", "』", ")", "）"))
+
+    if not stripped.endswith(("。", "！", "？", ".", "!", "?", "」", "』", "）", ")")):
+        return True
+
+    pairs = [("(", ")"), ("（", "）"), ("「", "」"), ("『", "』")]
+    for left, right in pairs:
+        if stripped.count(left) > stripped.count(right):
+            return True
+
+    parts = re.split(r"[。.!?！？]", stripped)
+    last_clause = parts[-2].strip() if len(parts) >= 2 else stripped
+    if len(last_clause) <= 4:
+        return True
+
+    return False
+
+
+def force_close_text(text: str) -> str:
+    t = (text or "").rstrip()
+    if not t:
+        return t
+
+    if t.endswith(("。", "！", "？", ".", "!", "?", "」", "』", "）", ")")):
+        return t
+
+    replacements = {
+        "柔軟": "柔軟な対応が求められる。",
+        "必要": "必要である。",
+        "可能": "可能である。",
+        "重要": "重要である。",
+        "有効": "有効である。",
+        "適切": "適切である。",
+        "必要が": "必要がある。",
+        "ことが": "ことが求められる。",
+        "ため": "ためである。",
+        "する": "する必要がある。",
+        "して": "していく必要がある。",
+        "いる": "いる。",
+    }
+    for k, v in replacements.items():
+        if t.endswith(k):
+            return t[:-len(k)] + v
+
+    if t.endswith(("は", "が", "を", "に", "で", "と", "も", "の", "へ")):
+        return t + "ついて検討する必要がある。"
+
+    return t + "。"
 
 
 def render_evidence_brief(ev: Evidence) -> str:
@@ -1069,11 +1122,15 @@ def complete_section_if_truncated(
     evidences: List[Evidence],
     strict_source_only: bool,
 ) -> str:
-    if not is_truncated_text(section_text):
-        return section_text
+    text = clean_text(section_text)
+    if not is_truncated_text(text):
+        return text
+
     source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
     evidence_text = join_evidence_briefs(evidences, 4)
-    prompt = f"""
+
+    for _ in range(2):
+        prompt = f"""
 以下の本文は途中で切れている可能性があります。続きを短く補完して、この節を自然に完結させてください。
 補完部分のみ出力してください。
 
@@ -1087,27 +1144,84 @@ def complete_section_if_truncated(
 {evidence_text}
 
 現在の本文:
-{section_text[-3500:]}
+{text[-3500:]}
 
 条件:
 - 補完部分のみ
 - 新しい論点を追加しない
 - 既存の議論を自然に完結させる
-{source_constraint}- 300〜700字程度でまとめる
+{source_constraint}- 200〜500字程度でまとめる
 """
-    addition = clean_text(
-        call_text(
-            client,
-            model,
-            "途中で切れた本文を自然に完結させる補完文を書く。本文のみ返す。",
-            prompt,
-            temperature=0.25,
-            max_output_tokens=1600,
+        addition = clean_text(
+            call_text(
+                client,
+                model,
+                "途中で切れた本文を自然に完結させる補完文を書く。本文のみ返す。",
+                prompt,
+                temperature=0.2,
+                max_output_tokens=1200,
+            )
         )
-    )
-    if not addition:
-        return section_text
-    return clean_text(section_text + "\n\n" + addition)
+        if addition:
+            text = clean_text(text + "\n\n" + addition)
+        if not is_truncated_text(text):
+            return text
+
+    return force_close_text(text)
+
+
+def ensure_complete_text(
+    client: OpenAI,
+    model: str,
+    theme: str,
+    report: str,
+    evidences: List[Evidence],
+    strict_source_only: bool,
+) -> str:
+    text = clean_text(report)
+    if not is_truncated_text(text):
+        return text
+
+    source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
+    evidence_text = join_evidence_briefs(evidences, 5)
+
+    for _ in range(2):
+        prompt = f"""
+以下のレポート本文は末尾が途中で切れている可能性があります。
+最後の流れを壊さず、自然に完結させてください。
+補完部分のみ出力してください。
+
+課題文:
+{theme}
+
+参考根拠:
+{evidence_text}
+
+現在の本文末尾:
+{text[-4500:]}
+
+条件:
+- 補完部分のみ
+- 新しい論点を追加しない
+- 既存の結論や最後の議論を自然に閉じる
+{source_constraint}- 150〜450字程度
+"""
+        addition = clean_text(
+            call_text(
+                client,
+                model,
+                "途中で切れたレポート末尾を自然に完結させる。補完部分のみ返す。",
+                prompt,
+                temperature=0.2,
+                max_output_tokens=1000,
+            )
+        )
+        if addition:
+            text = clean_text(text + "\n\n" + addition)
+        if not is_truncated_text(text):
+            return text
+
+    return force_close_text(text)
 
 # ============================================================
 # 10. 字数補正 / 重複整理 / 仕上げ
@@ -1170,7 +1284,7 @@ def patch_missing_terms(
 def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], style_mode: str) -> str:
     paragraphs = [p.strip() for p in re.split(r"\n\n+", report) if p.strip()]
     if len(paragraphs) < 2:
-        return report
+        return force_close_text(report)
     body = "\n\n".join(paragraphs[:-1])
     last = paragraphs[-1]
     evidence_text = join_evidence_briefs(evidences, 5)
@@ -1213,7 +1327,7 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
         )
     )
     paragraphs[-1] = new_last
-    return "\n\n".join(paragraphs)
+    return force_close_text("\n\n".join(paragraphs))
 
 
 def critique_report(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence]) -> Dict[str, Any]:
@@ -1663,11 +1777,15 @@ def run_fast_pipeline(
         report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
         report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
 
+    report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=False)
+
     critique = critique_report(client, model, theme, report, selected)
     if critique.get("revision_needed", False) and int(critique.get("overall_score", 0)) < 84:
         progress.note("高速版の品質底上げのため、最小限の改稿を1回だけ入れています。")
         report = rewrite_once(client, model, theme, report, critique, selected, style_mode, strict_source_only=False)
+        report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=False)
         report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=False)
+        report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=False)
         critique = critique_report(client, model, theme, report, selected)
 
     progress.finish("高速モードの生成が完了しました。")
@@ -1756,19 +1874,23 @@ def run_high_pipeline(
     report = patch_missing_terms(client, model, theme, report, selected, min_terms=cfg["min_source_terms"], strict_source_only=True)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
     report = regenerate_conclusion(client, model, theme, report, selected, style_mode)
+    report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=True)
 
     critique1 = critique_report(client, model, theme, report, selected)
     if critique1.get("revision_needed", False) or int(critique1.get("overall_score", 0)) < 88 or critique1.get("external_example_risk", 0) >= 1:
         progress.note("提出向け品質を狙うため、必要な場合だけ改稿を入れています。")
         report = rewrite_once(client, model, theme, report, critique1, selected, style_mode, strict_source_only=True)
+        report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=True)
 
     critique2 = critique_report(client, model, theme, report, selected)
     report = humanize_if_needed(client, model, theme, report, critique2)
+    report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=True)
 
     progress.set_flow_step("重複整理", "長文でのループ感を抑えるため重複を整理しています。")
     if target_length >= 6000:
         report = deduplicate_report_pass(client, model, theme, report, selected, target_length)
     report = enforce_length_requirements(client, model, theme, report, selected, target_length, strict_source_only=True)
+    report = ensure_complete_text(client, model, theme, report, selected, strict_source_only=True)
     critique_final = critique_report(client, model, theme, report, selected)
 
     progress.finish("ハイエンドモードの生成が完了しました。")
