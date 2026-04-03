@@ -11,7 +11,7 @@ import streamlit as st
 from openai import OpenAI
 
 # ============================================================
-# UI
+# 00. ページ設定 / 見た目
 # ============================================================
 st.set_page_config(page_title="ReportFlow Pro", page_icon="📝", layout="wide")
 
@@ -69,7 +69,7 @@ st.markdown(
             <span class="pill">根拠可視化</span>
             <span class="pill">字数補正</span>
             <span class="pill">10000字対応</span>
-            <span class="pill">進捗UI改善版</span>
+            <span class="pill">長文ループ改善版</span>
         </div>
     </div>
     """,
@@ -77,7 +77,7 @@ st.markdown(
 )
 
 # ============================================================
-# Constants
+# 01. 定数 / 設定
 # ============================================================
 FAST_DEFAULT_MODEL = "gpt-4.1-mini"
 HIGH_DEFAULT_MODEL = "gpt-4.1-mini"
@@ -125,7 +125,7 @@ FLOW_STEPS = [
 ]
 
 # ============================================================
-# Data classes
+# 02. データ構造
 # ============================================================
 @dataclass
 class Chunk:
@@ -165,9 +165,8 @@ class Evidence:
     reason: str
     duplicate_group: int = -1
 
-
 # ============================================================
-# Progress UI helpers
+# 03. 進捗UI
 # ============================================================
 class ProgressUI:
     def __init__(self, mode: str):
@@ -229,9 +228,8 @@ class ProgressUI:
         self.render_stage("完成", text, 1.0)
         self.notes.success(text)
 
-
 # ============================================================
-# API helpers
+# 04. OpenAI APIヘルパー
 # ============================================================
 def get_api_key() -> str:
     secrets_key = st.secrets.get("OPENAI_API_KEY", None)
@@ -270,14 +268,7 @@ def _repair_json_text(text: str) -> str:
     return s
 
 
-def call_json(
-    client: OpenAI,
-    model: str,
-    system: str,
-    user_prompt: str,
-    temperature: float = 0.2,
-    max_output_tokens: int = 2200,
-) -> Dict[str, Any]:
+def call_json(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.2, max_output_tokens: int = 2200) -> Dict[str, Any]:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -296,14 +287,7 @@ def call_json(
         return json.loads(repaired)
 
 
-def call_text(
-    client: OpenAI,
-    model: str,
-    system: str,
-    user_prompt: str,
-    temperature: float = 0.35,
-    max_output_tokens: int = 3200,
-) -> str:
+def call_text(client: OpenAI, model: str, system: str, user_prompt: str, temperature: float = 0.35, max_output_tokens: int = 3200) -> str:
     response = client.responses.create(
         model=model,
         temperature=temperature,
@@ -315,9 +299,8 @@ def call_text(
     )
     return response.output_text.strip()
 
-
 # ============================================================
-# Text helpers
+# 05. 文字列 / スコアリング補助
 # ============================================================
 def normalize_space(text: str) -> str:
     text = html.unescape(text or "")
@@ -513,9 +496,8 @@ def strict_source_constraint_text(strict_source_only: bool, hard: bool = False) 
         return "- 資料に明示されていない企業名・ブランド名・事例は原則出さない\n- 自分の一般知識で補った具体例は禁止\n"
     return "- 企業例は資料にあるものを優先し、資料外例は原則避ける\n"
 
-
 # ============================================================
-# PDF extraction
+# 06. PDF抽出
 # ============================================================
 def block_texts_from_page(page) -> List[Tuple[int, str]]:
     blocks = page.get_text("blocks")
@@ -588,9 +570,8 @@ def extract_chunks(files, chunk_char_min: int, chunk_char_max: int) -> List[Chun
                 )
     return chunks
 
-
 # ============================================================
-# Ranking and evidence
+# 07. 候補選抜 / 根拠化
 # ============================================================
 def local_prefilter(chunks: List[Chunk], theme: str, keep: int) -> List[Chunk]:
     theme_terms = lexical_terms(theme, top_k=12)
@@ -689,9 +670,8 @@ def select_representatives(evidences: List[Evidence], limit: int) -> List[Eviden
         reps.append(sorted(items, key=lambda x: (x.final_score, x.precise_score, x.specificity_score), reverse=True)[0])
     return sorted(reps, key=lambda x: (x.final_score, x.precise_score, x.usefulness_score), reverse=True)[:limit]
 
-
 # ============================================================
-# Planning / generation
+# 08. 論点設計 / blueprint
 # ============================================================
 def build_argument_map(client: OpenAI, model: str, theme: str, evidences: List[Evidence], points: int = 4) -> str:
     source = join_evidence_briefs(evidences, 10)
@@ -780,9 +760,11 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
 - 節数は {sections_count}
 - 各節は別の役割を持つ
 - 各節は前の節で十分に説明した話題を繰り返さない
+- 後半の節では前半の定義や事例を再説明しない
 - 少なくとも1節は資料間のつながりや対比を扱う
 - 一般論で水増ししない
 - 長さ配分は目標文字数に合わせる
+- 長文では節の担当を明確に分け、同じ論点を二度書かない
 
 課題文:
 {theme}
@@ -806,7 +788,9 @@ def build_blueprint(client: OpenAI, model: str, theme: str, evidences: List[Evid
     except Exception:
         return build_fallback_blueprint(evidences, target_length, sections_count)
 
-
+# ============================================================
+# 09. 本文生成
+# ============================================================
 def generate_single_pass_report(client: OpenAI, model: str, theme: str, target_length: int, argument_map: str, evidences: List[Evidence], style_mode: str, abstraction_mode: str, strict_source_only: bool) -> str:
     style_instruction = {"標準": "自然で読みやすい文体にする。", "やや硬め": "少しフォーマルで簡潔な文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
     abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化して上位概念で整理する。", "抽象度低め": "やや具体的にし、資料上の概念や事例を厚めに使う。"}[abstraction_mode]
@@ -851,7 +835,7 @@ def generate_section_text(client: OpenAI, model: str, theme: str, thesis: str, s
     style_instruction = {"標準": "自然で読みやすい大学レポート文体にする。", "やや硬め": "少しフォーマルで締まった文体にする。", "やや柔らかめ": "少し柔らかいが幼くしない文体にする。"}[style_mode]
     abstraction_instruction = {"標準": "抽象と具体のバランスを標準にする。", "抽象度高め": "やや抽象化し、上位概念で整理する。", "抽象度低め": "やや具体化し、資料記述を厚めに使う。"}[abstraction_mode]
     source_constraint = strict_source_constraint_text(strict_source_only)
-    prev_tail = previous_text[-1500:] if previous_text else "なし"
+    prev_tail = previous_text[-1200:] if previous_text else "なし"
     used_terms_text = ", ".join(used_terms[-18:]) if used_terms else "なし"
     must_terms = ", ".join(section.get("must_use_terms", []))
     must_not_repeat = ", ".join(section.get("must_not_repeat", []))
@@ -892,6 +876,7 @@ must_not_repeat: {must_not_repeat}
 - 箇条書き禁止
 - 同じ主張の繰り返し禁止
 - この節の key_claim に集中する
+- この節でしか言えない内容を書く
 - must_use_terms を最低2個使う
 - must_not_repeat に入っている話題は再説明しない
 - 前半ですでに十分述べた論点を言い換えて繰り返さない
@@ -904,7 +889,7 @@ must_not_repeat: {must_not_repeat}
 - {abstraction_instruction}
 - 目安として {int(target_chars * 0.90)} 字以上は書く
 """
-    return clean_text(call_text(client, model, "資料根拠に忠実で、前半の再説明を避けた大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.35, max_output_tokens=4200))
+    return clean_text(call_text(client, model, "資料根拠に忠実で、前半の再説明を避けた大学レポート本文を書く。本文のみ返す。", prompt, temperature=0.32, max_output_tokens=4200))
 
 
 def complete_section_if_truncated(client: OpenAI, model: str, theme: str, section_name: str, section_text: str, evidences: List[Evidence], strict_source_only: bool) -> str:
@@ -939,7 +924,9 @@ def complete_section_if_truncated(client: OpenAI, model: str, theme: str, sectio
         return section_text
     return clean_text(section_text + "\n\n" + addition)
 
-
+# ============================================================
+# 10. 字数補正 / 重複整理 / 仕上げ
+# ============================================================
 def patch_missing_terms(client: OpenAI, model: str, theme: str, text: str, evidences: List[Evidence], min_terms: int, strict_source_only: bool) -> str:
     important = important_terms_from_evidences(evidences, top_k=12)
     missing = [t for t in important if t not in text][:min_terms]
@@ -1014,9 +1001,6 @@ def regenerate_conclusion(client: OpenAI, model: str, theme: str, report: str, e
     return "\n\n".join(paragraphs)
 
 
-# ============================================================
-# Critique and length control
-# ============================================================
 def critique_report(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence]) -> Dict[str, Any]:
     ref_terms = important_terms_from_evidences(evidences, top_k=12)
     prompt = f"""
@@ -1123,7 +1107,7 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
         return report
     source_constraint = strict_source_constraint_text(strict_source_only, hard=True)
     evidence_text = join_evidence_briefs(evidences, 6)
-    target_addition = max(700, min(shortage + 250, 1400))
+    target_addition = max(700, min(shortage + 250, 1200))
     prompt = f"""
 以下の本文は字数が不足しています。不足分を埋める追加段落だけを書いてください。
 追加段落のみ出力してください。
@@ -1153,10 +1137,11 @@ def append_report_if_too_short(client: OpenAI, model: str, theme: str, report: s
 - 新しい論点を追加しない
 - まだ十分に展開していない論点の補足だけを行う
 - 既に詳しく説明した論点の言い換え再説明は禁止
+- 既出の定義を繰り返さない
 - 各段落で資料由来の概念を明示する
 {source_constraint}- 約{target_addition}字ぶんの中身を増やす
 """
-    addition = clean_text(call_text(client, model, "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。", prompt, temperature=0.26, max_output_tokens=2800))
+    addition = clean_text(call_text(client, model, "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。", prompt, temperature=0.24, max_output_tokens=2400))
     if not addition:
         return report
     return clean_text(report + "\n\n" + addition)
@@ -1169,7 +1154,7 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
     evidence_text = join_evidence_briefs(evidences, 6)
     targets = build_length_targets(target_length, strict=strict_source_only)
     shortage = max(0, targets["min"] - len(report))
-    target_addition = max(700, min(shortage + 250, 1300))
+    target_addition = max(700, min(shortage + 250, 1100))
     prompt = f"""
 以下の本文はまだ字数が不足しています。続きを追加してください。本文のみ出力してください。
 
@@ -1190,10 +1175,11 @@ def append_global_continuation_if_needed(client: OpenAI, model: str, theme: str,
 - 新しい論点を追加しない
 - 既存論点のうち、まだ浅い部分の比較・含意・限定条件だけを補う
 - 既に説明した内容の言い換え再説明は禁止
+- 既出の事例を別表現でなぞらない
 - 最後は自然に終える
 {source_constraint}- 約{target_addition}字を目安に追記する
 """
-    continuation = clean_text(call_text(client, model, "不足字数を、未展開部分の補足だけで埋める続きを書く。本文のみ返す。", prompt, temperature=0.24, max_output_tokens=2600))
+    continuation = clean_text(call_text(client, model, "不足字数を、未展開部分の補足だけで埋める続きを書く。本文のみ返す。", prompt, temperature=0.22, max_output_tokens=2200))
     if not continuation:
         return report
     return clean_text(report + "\n\n" + continuation)
@@ -1221,7 +1207,7 @@ def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_
 
 
 def enforce_length_requirements(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence], target_length: int, strict_source_only: bool) -> str:
-    for _ in range(3):
+    for _ in range(2):
         status = length_band_status(report, target_length, strict=strict_source_only)
         if status == "short":
             report = append_report_if_too_short(client, model, theme, report, evidences, target_length, strict_source_only)
@@ -1251,17 +1237,17 @@ def deduplicate_report_pass(client: OpenAI, model: str, theme: str, report: str,
 - 本文のみ
 - 同じ論点の言い換え反復を統合する
 - 後半で前半をなぞっている箇所を削る
+- 同じ定義や同じ事例の再登場を削る
 - 構成の流れは保つ
 - 資料固有語は残す
 
 本文:
 {report}
 """
-    return clean_text(call_text(client, model, "長文レポートの重複だけを整理して締める。本文のみ返す。", prompt, temperature=0.18, max_output_tokens=4200))
-
+    return clean_text(call_text(client, model, "長文レポートの重複だけを整理して締める。本文のみ返す。", prompt, temperature=0.16, max_output_tokens=4200))
 
 # ============================================================
-# Theme shaping
+# 11. テーマ補助入力
 # ============================================================
 def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
     parts = [f"課題文: {theme.strip()}"]
@@ -1282,9 +1268,8 @@ def broad_theme_warning(theme: str, focus_points: str, preferred_concepts: str, 
     helper_count = sum(bool(x.strip()) for x in [focus_points, preferred_concepts, excluded_topics, source_scope])
     return len(theme.strip()) < 55 or (score >= 3 and helper_count == 0)
 
-
 # ============================================================
-# Pipelines
+# 12. 高速パイプライン
 # ============================================================
 def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str, progress: ProgressUI) -> Dict[str, Any]:
     cfg = FAST_SETTINGS
@@ -1357,7 +1342,9 @@ def run_fast_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
     progress.finish("高速モードの生成が完了しました。")
     return {"mode": "高速", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "report": report, "critique": critique}
 
-
+# ============================================================
+# 13. ハイエンドパイプライン
+# ============================================================
 def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, target_length: int, style_mode: str, abstraction_mode: str, progress: ProgressUI) -> Dict[str, Any]:
     cfg = HIGH_SETTINGS
     progress.set_flow_step("PDF抽出", "PDFを丁寧に分解して意味チャンクを作っています。")
@@ -1430,9 +1417,8 @@ def run_high_pipeline(client: OpenAI, model: str, theme: str, uploaded_files, ta
     progress.finish("ハイエンドモードの生成が完了しました。")
     return {"mode": "ハイエンド", "chunks": chunks, "selected_evidences": selected, "argument_map": argument_map, "blueprint": blueprint, "report": report, "critique": critique_final}
 
-
 # ============================================================
-# Session state / UI
+# 14. UI入力 / 実行
 # ============================================================
 for key, default in {"result": None, "theme_snapshot": ""}.items():
     if key not in st.session_state:
@@ -1502,6 +1488,9 @@ if fast_clicked or high_clicked:
         st.exception(e)
         st.stop()
 
+# ============================================================
+# 15. 出力表示
+# ============================================================
 if st.session_state.result:
     result = st.session_state.result
     report = result["report"]
