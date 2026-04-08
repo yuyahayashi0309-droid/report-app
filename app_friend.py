@@ -1035,8 +1035,9 @@ def generate_single_pass_report(
     if not paragraphs:
         raise ValueError("段落設計が空です。")
 
-    usable_target = max(1200, target_length)
-    paragraph_target = max(180, int(usable_target / max(len(paragraphs), 1)) - 40)
+    # 結論・接続で少し削られるので、初稿はやや厚めに作る
+    usable_target = max(1400, int(target_length * 1.03))
+    paragraph_target = max(320, int(usable_target / max(len(paragraphs), 1)) - 20)
 
     used_claims: List[str] = []
     used_examples: List[str] = []
@@ -1271,6 +1272,48 @@ def append_report_if_too_short(
         )
     )
     return rewritten if rewritten else report
+
+
+def enforce_length_strictly(
+    client: OpenAI,
+    model: str,
+    theme: str,
+    report: str,
+    evidences: List[Evidence],
+    target_length: int,
+    max_rounds: int = 3,
+) -> str:
+    text = clean_text(report)
+
+    for _ in range(max_rounds):
+        status = length_band_status(text, target_length, strict=True)
+
+        if status == "ok":
+            return text
+
+        if status == "short":
+            text = append_report_if_too_short(
+                client=client,
+                model=model,
+                theme=theme,
+                report=text,
+                evidences=evidences,
+                target_length=target_length,
+            )
+            text = clean_text(text)
+            continue
+
+        if status == "long":
+            text = compress_report_if_too_long(
+                client=client,
+                model=model,
+                report=text,
+                target_length=target_length,
+            )
+            text = clean_text(text)
+            continue
+
+    return text
 
 
 def ensure_complete_text(
@@ -1512,6 +1555,13 @@ def run_fast_pipeline(
         target_length=target_length,
         style_mode=style_mode,
     )
+
+    strict_bounds = build_length_targets(target_length, strict=True)
+    final_len = len(report)
+    if final_len < strict_bounds["min"]:
+        raise ValueError(
+            f"指定字数を満たせませんでした。現在 {final_len} 字、必要最低 {strict_bounds['min']} 字です。"
+        )
 
     progress.set_flow_step("重複整理", "意味重複を最終確認しています。")
     report = dedupe_report_semantically(client, model, theme, report, selected)
