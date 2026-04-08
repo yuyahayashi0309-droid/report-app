@@ -19,7 +19,6 @@ from openai import OpenAI
 # - 共通パスワードあり
 # - 1日あたり利用回数制限あり
 # - PDF数 / ファイルサイズ / 文字数の上限あり
-# - 論点重複を抑えるため、段落ごと生成 + 意味重複整理を採用
 # ============================================================
 
 st.set_page_config(page_title="ReportFlow Friend Test", page_icon="📝", layout="wide")
@@ -59,10 +58,6 @@ st.markdown(
         opacity: 0.8;
         font-size: 0.94rem;
     }
-    .small-muted {
-        opacity: 0.75;
-        font-size: 0.9rem;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -82,7 +77,6 @@ st.markdown(
             <span class="pill">字数補正</span>
             <span class="pill">未完文対策</span>
             <span class="pill">根拠可視化</span>
-            <span class="pill">重複抑制</span>
         </div>
     </div>
     """,
@@ -266,7 +260,6 @@ class Evidence:
     reason: str
     duplicate_group: int = -1
 
-
 # ============================================================
 # 06. 進捗UI
 # ============================================================
@@ -288,9 +281,9 @@ class ProgressUI:
         self.status.markdown("**高速モード実行中**")
         self.stage.markdown(
             f"""
-            <div class="stage-box">
-                <div class="stage-title">{html.escape(title)}</div>
-                <div class="stage-sub">{html.escape(subtitle)}</div>
+            <div class=\"stage-box\">
+                <div class=\"stage-title\">{html.escape(title)}</div>
+                <div class=\"stage-sub\">{html.escape(subtitle)}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -410,7 +403,7 @@ def call_text(
             {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
         ],
     )
-    return (response.output_text or "").strip()
+    return response.output_text.strip()
 
 # ============================================================
 # 08. 文字列 / スコアリング補助
@@ -829,40 +822,18 @@ def select_representatives(evidences: List[Evidence], limit: int) -> List[Eviden
 # ============================================================
 # 11. 要約・設計・本文生成
 # ============================================================
-def build_argument_map(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    evidences: List[Evidence],
-    points: int = 4,
-) -> Dict[str, Any]:
+def build_argument_map(client: OpenAI, model: str, theme: str, evidences: List[Evidence], points: int = 3) -> str:
     source = join_evidence_briefs(evidences, 10)
     prompt = f"""
 以下は課題文と、採用候補の資料根拠です。
-この課題に答えるための論点設計をJSONで作成してください。
-JSONのみ返してください。
-
-必須キー:
-- thesis: レポート全体の中心主張 1文
-- paragraphs: 配列（{points}個前後）
-  - paragraph_id: "P1" 形式
-  - role: [intro, structure_change, intermediary_role, efficiency_mechanism, conflict_adjustment, conclusion]
-  - main_claim: その段落で述べる中心主張 1文
-  - evidence_ids: 使用するEvidenceのchunk_id配列（1〜3個）
-  - must_terms: その段落で必ず使う概念 2〜4個
-  - forbidden_topics: この段落では主役として再説明してはいけない内容 1〜3個
-  - relation_to_prev: 前段落との接続 1文
-- notes:
-  - avoid_repetition: 重複回避の要点を2〜4個
-  - conclusion_focus: 結論で強調すべき点 1文
+この課題に答えるための論点を {points} 個前後で整理してください。
+プレーンテキストのみ出力してください。
 
 条件:
+- point / source / why_it_matters の形で簡潔にまとめる
 - 似た論点は統合する
-- 同じ具体例を複数段落の主役にしない
-- 各段落は固有の役割を持たせる
-- 一般論より資料根拠を優先する
-- 資料固有概念を優先する
-- 「字数稼ぎの言い換え」を避ける設計にする
+- 一般論ではなく資料根拠に依拠する
+- 資料固有の概念を優先する
 
 課題文:
 {theme}
@@ -870,77 +841,18 @@ JSONのみ返してください。
 資料根拠:
 {source}
 """
-    data = call_json(
-        client,
-        model,
-        "講義資料の根拠を重複の少ない段落設計JSONへ変換する。JSONのみ返す。",
-        prompt,
-        temperature=0.15,
-        max_output_tokens=2400,
-    )
-
-    if not isinstance(data, dict):
-        raise ValueError("論点設計JSONの生成に失敗しました。")
-
-    paragraphs = data.get("paragraphs", [])
-    if not isinstance(paragraphs, list) or not paragraphs:
-        raise ValueError("paragraphs が取得できませんでした。")
-
-    return data
+    return call_text(client, model, "講義資料から論点設計を行う。プレーンテキストのみ返す。", prompt, temperature=0.2, max_output_tokens=1500)
 
 
-def evidence_map_by_id(evidences: List[Evidence]) -> Dict[str, Evidence]:
-    return {ev.chunk_id: ev for ev in evidences}
-
-
-def render_evidence_min(ev: Evidence) -> str:
-    return textwrap.dedent(
-        f"""
-        id: {ev.chunk_id}
-        topic: {ev.topic}
-        proposition: {ev.proposition}
-        evidence: {ev.evidence}
-        example: {ev.example}
-        terminology: {', '.join(ev.terminology)}
-        contrast: {ev.contrast}
-        cause_effect: {ev.cause_effect}
-        """
-    ).strip()
-
-
-def gather_outline_evidence_text(outline_item: Dict[str, Any], ev_map: Dict[str, Evidence]) -> str:
-    ids = outline_item.get("evidence_ids", []) or []
-    picked = []
-    for eid in ids:
-        if eid in ev_map:
-            picked.append(render_evidence_min(ev_map[eid]))
-    return "\n\n".join(picked[:3])
-
-
-def normalize_outline_item(item: Dict[str, Any], idx: int) -> Dict[str, Any]:
-    return {
-        "paragraph_id": str(item.get("paragraph_id", f"P{idx+1}")),
-        "role": str(item.get("role", "body")),
-        "main_claim": str(item.get("main_claim", "")).strip(),
-        "evidence_ids": safe_json_list(item.get("evidence_ids", [])),
-        "must_terms": safe_json_list(item.get("must_terms", [])),
-        "forbidden_topics": safe_json_list(item.get("forbidden_topics", [])),
-        "relation_to_prev": str(item.get("relation_to_prev", "")).strip(),
-    }
-
-
-def generate_paragraph(
+def generate_single_pass_report(
     client: OpenAI,
     model: str,
     theme: str,
-    outline_item: Dict[str, Any],
-    ev_map: Dict[str, Evidence],
-    thesis: str,
-    used_claims: List[str],
-    used_examples: List[str],
+    target_length: int,
+    argument_map: str,
+    evidences: List[Evidence],
     style_mode: str,
     abstraction_mode: str,
-    paragraph_target: int,
 ) -> str:
     style_instruction = {
         "標準": "自然で読みやすい文体にする。",
@@ -952,56 +864,37 @@ def generate_paragraph(
         "抽象度高め": "やや抽象化して上位概念で整理する。",
         "抽象度低め": "やや具体的にし、資料上の概念や事例を厚めに使う。",
     }[abstraction_mode]
-
-    evidence_text = gather_outline_evidence_text(outline_item, ev_map)
-    must_terms = outline_item.get("must_terms", [])
-    forbidden_topics = outline_item.get("forbidden_topics", [])
-
+    source = join_evidence_briefs(evidences, 8)
+    must_terms = important_terms_from_evidences(evidences, top_k=8)
     prompt = f"""
-以下の条件で、レポート本文の1段落だけを書いてください。
-本文1段落のみ出力してください。
+以下の課題文、論点整理、資料根拠をもとに約{target_length}字のレポート本文を書いてください。
+本文のみ出力してください。
 
 課題文:
 {theme}
 
-レポート全体の中心主張:
-{thesis}
+論点整理:
+{argument_map}
 
-この段落の役割:
-{outline_item.get("role", "")}
+資料根拠:
+{source}
 
-この段落の中心主張:
-{outline_item.get("main_claim", "")}
-
-前段落との接続:
-{outline_item.get("relation_to_prev", "")}
-
-この段落で使う根拠:
-{evidence_text}
-
-必ず使う概念:
+必ず使いたい概念:
 {', '.join(must_terms)}
 
-既に説明済みの主張:
-- {' / '.join(used_claims) if used_claims else 'なし'}
-
-既に使用済みの事例・固有例:
-- {' / '.join(used_examples) if used_examples else 'なし'}
-
-この段落で再説明してはいけない内容:
-- {' / '.join(forbidden_topics) if forbidden_topics else 'なし'}
-
-目安字数:
-約{paragraph_target}字
-
 条件:
-- 本文1段落のみ
+- 本文のみ
 - 見出し禁止
 - 箇条書き禁止
-- 同じ定義や事例の再説明禁止
-- 既出主張の言い換えで字数を稼がない
-- 不足分は因果、比較、意義の明確化で補う
-- 資料にない新事例を足さない
+- Markdown禁止
+- 同じ主張の言い換え反復を避ける
+- 資料固有の概念を最低4つ入れる
+- 各段落で資料由来の概念を最低1つは明示する
+- 資料間のつながりや比較を最低1回入れる
+- 一般論に逃げすぎない
+- 抽象語だけで段落を締めない
+- 資料に明示されていない企業名・ブランド名・事例は原則出さない
+- 最後は短く自分の考察で締める
 - {style_instruction}
 - {abstraction_instruction}
 """
@@ -1009,169 +902,162 @@ def generate_paragraph(
         call_text(
             client,
             model,
-            "各段落に固有の役割を持たせ、既出内容を繰り返さずに本文を作る。本文のみ返す。",
+            "資料密着型の大学レポート本文を書く。本文のみ返す。",
             prompt,
-            temperature=0.25,
-            max_output_tokens=1400,
+            temperature=0.42,
+            max_output_tokens=5200,
         )
     )
 
-
-def generate_single_pass_report(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    target_length: int,
-    argument_map: Dict[str, Any],
-    evidences: List[Evidence],
-    style_mode: str,
-    abstraction_mode: str,
-) -> str:
-    thesis = str(argument_map.get("thesis", "")).strip()
-    raw_paragraphs = argument_map.get("paragraphs", []) or []
-    paragraphs = [normalize_outline_item(p, i) for i, p in enumerate(raw_paragraphs)]
-    ev_map = evidence_map_by_id(evidences)
-
-    if not paragraphs:
-        raise ValueError("段落設計が空です。")
-
-    # 結論・接続で少し削られるので、初稿はやや厚めに作る
-    usable_target = max(1400, int(target_length * 1.03))
-    paragraph_target = max(320, int(usable_target / max(len(paragraphs), 1)) - 20)
-
-    used_claims: List[str] = []
-    used_examples: List[str] = []
-    built: List[str] = []
-
-    for item in paragraphs:
-        para = generate_paragraph(
-            client=client,
-            model=model,
-            theme=theme,
-            outline_item=item,
-            ev_map=ev_map,
-            thesis=thesis,
-            used_claims=used_claims,
-            used_examples=used_examples,
-            style_mode=style_mode,
-            abstraction_mode=abstraction_mode,
-            paragraph_target=paragraph_target,
-        )
-        if para:
-            built.append(para)
-
-        main_claim = item.get("main_claim", "").strip()
-        if main_claim:
-            used_claims.append(main_claim)
-
-        for eid in item.get("evidence_ids", []):
-            ev = ev_map.get(eid)
-            if not ev:
-                continue
-            if ev.example and ev.example != "なし":
-                used_examples.append(ev.example)
-            elif ev.topic:
-                used_examples.append(ev.topic)
-
-    report = "\n\n".join(p for p in built if p.strip())
-    return clean_text(report)
-
 # ============================================================
-# 12. 仕上げ / 批評 / リライト
+# 12. 仕上げ
 # ============================================================
 def patch_missing_terms(
     client: OpenAI,
     model: str,
     theme: str,
-    report: str,
+    text: str,
     evidences: List[Evidence],
-    min_terms: int = 3,
+    min_terms: int,
 ) -> str:
-    terms = important_terms_from_evidences(evidences, top_k=12)
-    present = [t for t in terms if t in report]
-    if len(present) >= min_terms:
-        return report
-
-    missing = [t for t in terms if t not in report][: max(2, min_terms - len(present) + 2)]
-    evidence_text = join_evidence_briefs(evidences, 5)
+    important = important_terms_from_evidences(evidences, top_k=12)
+    missing = [t for t in important if t not in text][:min_terms]
+    if not missing:
+        return text
+    ref_blocks = []
+    for ev in evidences[:6]:
+        if any(t in ev.terminology or t in ev.topic or t in ev.proposition for t in missing):
+            ref_blocks.append(render_evidence_brief(ev))
+    ref_text = "\n\n".join(ref_blocks[:4])
     prompt = f"""
-以下の本文に、資料由来の概念がやや不足しています。
-本文全体を自然に整えつつ、欠けている概念を無理なく組み込んでください。
+以下のレポート本文を、論旨を保ったまま最小限だけ書き直してください。
+目的は、未使用の重要概念を自然に織り込むことです。
 本文のみ出力してください。
 
 課題文:
 {theme}
 
-参考根拠:
-{evidence_text}
-
-できれば入れたい概念:
+未使用の重要概念:
 {', '.join(missing)}
 
-現在の本文:
-{report}
+参考根拠:
+{ref_text}
+
+本文:
+{text}
 
 条件:
 - 本文のみ
-- 新しい外部事例を追加しない
-- 既存の論旨を壊さない
-- 概念を機械的に列挙しない
+- 構成を大きく変えない
+- 無理やり全部入れなくてよい
+- 一般論で水増ししない
+- 資料外例は原則避ける
 """
-    rewritten = clean_text(
+    return clean_text(
         call_text(
             client,
             model,
-            "資料由来の概念を自然に補う。本文のみ返す。",
+            "最小修正で概念不足を補う。本文のみ返す。",
             prompt,
-            temperature=0.18,
-            max_output_tokens=4200,
+            temperature=0.25,
+            max_output_tokens=3200,
         )
     )
-    return rewritten if rewritten else report
 
 
-def dedupe_report_semantically(
+def critique_report(client: OpenAI, model: str, theme: str, report: str, evidences: List[Evidence]) -> Dict[str, Any]:
+    ref_terms = important_terms_from_evidences(evidences, top_k=12)
+    prompt = f"""
+以下のレポートを厳しく評価してください。返答はJSONのみ。
+
+必要キー:
+- overall_score: 0-100
+- specificity_ok: true/false
+- repetition_ok: true/false
+- coverage_ok: true/false
+- ai_stiffness: 0-3
+- length_fit: 0-3
+- weaknesses: 配列（0〜5件）
+- revision_needed: true/false
+- revision_focus: 配列（0〜4件）
+
+参考重要概念:
+{', '.join(ref_terms)}
+
+課題文:
+{theme}
+
+本文:
+{report}
+"""
+    data = call_json(
+        client,
+        model,
+        "資料固有性、重複、論点カバー、AIっぽさを厳しく評価する。JSONのみ返す。",
+        prompt,
+        temperature=0.0,
+        max_output_tokens=900,
+    )
+    data["external_example_risk"] = detect_external_example_risk(report, evidences)
+    data["abstract_term_pressure"] = count_abstract_term_hits(report)
+    return data
+
+
+def rewrite_once(
     client: OpenAI,
     model: str,
     theme: str,
     report: str,
+    critique: Dict[str, Any],
     evidences: List[Evidence],
+    style_mode: str,
 ) -> str:
-    evidence_text = join_evidence_briefs(evidences, 6)
+    style_instruction = {
+        "標準": "自然で読みやすくする。",
+        "やや硬め": "少しフォーマルで締まった文体にする。",
+        "やや柔らかめ": "少し柔らかくするが、幼くしない。",
+    }[style_mode]
+    source = join_evidence_briefs(evidences, 6)
+    focus = ", ".join(critique.get("revision_focus", [])) or "資料固有性と重複"
+    weaknesses = "\n".join(f"- {w}" for w in critique.get("weaknesses", [])) or "- なし"
     prompt = f"""
-以下の本文について、意味が重複している文・段落を統合し、
-情報量を落とさずに自然な本文へ整えてください。
+以下のレポートを必要最小限の修正で改善してください。
 本文のみ出力してください。
 
 課題文:
 {theme}
 
-参考根拠:
-{evidence_text}
+修正の重点:
+{focus}
 
-本文:
+弱点:
+{weaknesses}
+
+参考根拠:
+{source}
+
+元の本文:
 {report}
 
 条件:
 - 本文のみ
-- 新情報の追加禁止
-- 同じ主張の言い換え反復を削除する
-- 同じ事例の再説明を削除する
-- 削った分は因果関係・比較・意義の明確化に充てる
-- 段落ごとの役割が重ならないようにする
-- 資料固有語はなるべく残す
+- なるべく構成を維持
+- 資料固有語を消さない
+- 重複を減らす
+- 抽象的すぎる箇所だけ具体化する
+- 資料外例は原則避ける
+- {style_instruction}
 """
-    rewritten = clean_text(
+    return clean_text(
         call_text(
             client,
             model,
-            "意味重複を削除し、段落の役割分担を明確化する。本文のみ返す。",
+            "最小限の改稿で品質を上げる。本文のみ返す。",
             prompt,
-            temperature=0.15,
+            temperature=0.28,
             max_output_tokens=4200,
         )
     )
-    return rewritten if rewritten else report
 
 
 def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_length: int) -> str:
@@ -1192,7 +1078,7 @@ def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_
 本文:
 {report}
 """
-    rewritten = clean_text(
+    return clean_text(
         call_text(
             client,
             model,
@@ -1202,7 +1088,6 @@ def compress_report_if_too_long(client: OpenAI, model: str, report: str, target_
             max_output_tokens=4200,
         )
     )
-    return rewritten if rewritten else report
 
 
 def append_report_if_too_short(
@@ -1216,20 +1101,15 @@ def append_report_if_too_short(
     status = length_band_status(report, target_length, strict=False)
     if status != "short":
         return report
-
     targets = build_length_targets(target_length, strict=False)
     shortage = max(0, targets["min"] - len(report))
     if shortage <= 0:
         return report
-
     evidence_text = join_evidence_briefs(evidences, 6)
-    must_terms = important_terms_from_evidences(evidences, top_k=10)
-
+    target_addition = max(500, min(shortage + 200, 900))
     prompt = f"""
-以下の本文は字数が不足しています。
-ただし追加段落の継ぎ足しではなく、本文全体を再構成して
-約{targets['ideal']}字に近づけてください。
-本文のみ出力してください。
+以下の本文は字数が不足しています。不足分を埋める追加段落だけを書いてください。
+追加段落のみ出力してください。
 
 課題文:
 {theme}
@@ -1242,78 +1122,38 @@ def append_report_if_too_short(
 {targets['ideal']}
 不足目安:
 約{shortage}字
+今回追加したい目安:
+約{target_addition}字
 
 参考根拠:
 {evidence_text}
 
-できれば残したい概念:
-{', '.join(must_terms)}
-
-現在の本文:
-{report}
+既存本文:
+{report[-5000:]}
 
 条件:
-- 本文のみ
-- 既出論点の再説明禁止
-- 同じ事例の再利用禁止
-- 不足分は因果関係、比較、含意、段落間の接続の明確化で補う
-- 新しい外部事例を追加しない
-- 資料固有語をできるだけ残す
-- 同じ主張の言い換えで字数を稼がない
+- 追加段落のみ
+- 新しい論点を追加しない
+- まだ十分に展開していない論点の補足だけを行う
+- 既に詳しく説明した論点の言い換え再説明は禁止
+- 既出の定義を繰り返さない
+- 既出の事例を別表現でなぞらない
+- 各段落で資料由来の概念を明示する
+- 約{target_addition}字ぶんの中身を増やす
 """
-    rewritten = clean_text(
+    addition = clean_text(
         call_text(
             client,
             model,
-            "字数不足時は追記ではなく全文再構成で補う。本文のみ返す。",
+            "字数不足を、未展開論点の補足だけで埋める追加段落を書く。本文のみ返す。",
             prompt,
-            temperature=0.2,
-            max_output_tokens=4200,
+            temperature=0.24,
+            max_output_tokens=2000,
         )
     )
-    return rewritten if rewritten else report
-
-
-def enforce_length_strictly(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    report: str,
-    evidences: List[Evidence],
-    target_length: int,
-    max_rounds: int = 3,
-) -> str:
-    text = clean_text(report)
-
-    for _ in range(max_rounds):
-        status = length_band_status(text, target_length, strict=True)
-
-        if status == "ok":
-            return text
-
-        if status == "short":
-            text = append_report_if_too_short(
-                client=client,
-                model=model,
-                theme=theme,
-                report=text,
-                evidences=evidences,
-                target_length=target_length,
-            )
-            text = clean_text(text)
-            continue
-
-        if status == "long":
-            text = compress_report_if_too_long(
-                client=client,
-                model=model,
-                report=text,
-                target_length=target_length,
-            )
-            text = clean_text(text)
-            continue
-
-    return text
+    if not addition:
+        return report
+    return clean_text(report + "\n\n" + addition)
 
 
 def ensure_complete_text(
@@ -1365,109 +1205,6 @@ def ensure_complete_text(
     return force_close_text(text)
 
 
-def critique_report(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    report: str,
-    evidences: List[Evidence],
-) -> Dict[str, Any]:
-    evidence_text = join_evidence_briefs(evidences, 6)
-    prompt = f"""
-以下のレポート本文を講義レポートとして批評し、JSONのみで返してください。
-
-必須キー:
-- overall_score: 0-100
-- revision_needed: true/false
-- strengths: 配列 2〜4個
-- weaknesses: 配列 2〜5個
-- missing_terms: 配列 0〜5個
-- repetition_risk: 0-3
-- external_example_risk: 0-3
-- comment: 1〜3文
-
-課題文:
-{theme}
-
-参考根拠:
-{evidence_text}
-
-本文:
-{report}
-"""
-    try:
-        return call_json(
-            client,
-            model,
-            "講義レポートの品質を採点し、JSONのみ返す。",
-            prompt,
-            temperature=0.1,
-            max_output_tokens=1600,
-        )
-    except Exception:
-        return {
-            "overall_score": 80,
-            "revision_needed": False,
-            "strengths": ["資料概念が一定数入っている"],
-            "weaknesses": [],
-            "missing_terms": [],
-            "repetition_risk": 1,
-            "external_example_risk": detect_external_example_risk(report, evidences),
-            "comment": "自動批評に失敗したため簡易評価を返しました。",
-        }
-
-
-def rewrite_once(
-    client: OpenAI,
-    model: str,
-    theme: str,
-    report: str,
-    critique: Dict[str, Any],
-    evidences: List[Evidence],
-    style_mode: str,
-) -> str:
-    style_instruction = {
-        "標準": "自然で読みやすい文体にする。",
-        "やや硬め": "少しフォーマルで簡潔な文体にする。",
-        "やや柔らかめ": "少し柔らかいが幼くしない文体にする。",
-    }[style_mode]
-    evidence_text = join_evidence_briefs(evidences, 6)
-    prompt = f"""
-以下のレポート本文を、批評を踏まえて1回だけ改善してください。
-本文のみ出力してください。
-
-課題文:
-{theme}
-
-参考根拠:
-{evidence_text}
-
-現在の本文:
-{report}
-
-批評:
-{json.dumps(critique, ensure_ascii=False, indent=2)}
-
-条件:
-- 本文のみ
-- 新しい外部事例を追加しない
-- 同じ主張の言い換え反復を減らす
-- 資料固有概念は維持する
-- {style_instruction}
-"""
-    rewritten = clean_text(
-        call_text(
-            client,
-            model,
-            "批評を踏まえて本文を一度だけ改善する。本文のみ返す。",
-            prompt,
-            temperature=0.22,
-            max_output_tokens=4200,
-        )
-    )
-    return rewritten if rewritten else report
-
-
 def finalize_report(
     client: OpenAI,
     model: str,
@@ -1478,16 +1215,13 @@ def finalize_report(
     style_mode: str,
 ) -> Tuple[str, Dict[str, Any]]:
     report = patch_missing_terms(client, model, theme, report, evidences, min_terms=FAST_SETTINGS["min_source_terms"])
-    report = dedupe_report_semantically(client, model, theme, report, evidences)
     report = append_report_if_too_short(client, model, theme, report, evidences, target_length)
-    report = dedupe_report_semantically(client, model, theme, report, evidences)
     report = compress_report_if_too_long(client, model, report, target_length)
     report = ensure_complete_text(client, model, theme, report, evidences)
 
     critique = critique_report(client, model, theme, report, evidences)
     if critique.get("revision_needed", False) and int(critique.get("overall_score", 0)) < 84:
         report = rewrite_once(client, model, theme, report, critique, evidences, style_mode)
-        report = dedupe_report_semantically(client, model, theme, report, evidences)
         report = ensure_complete_text(client, model, theme, report, evidences)
         critique = critique_report(client, model, theme, report, evidences)
 
@@ -1507,7 +1241,6 @@ def run_fast_pipeline(
     progress: ProgressUI,
 ) -> Dict[str, Any]:
     cfg = FAST_SETTINGS
-
     progress.set_flow_step("PDF抽出", "PDFから意味チャンクを取り出しています。")
     chunks = extract_chunks(uploaded_files, cfg["chunk_char_min"], cfg["chunk_char_max"])
     if not chunks:
@@ -1530,159 +1263,193 @@ def run_fast_pipeline(
     selected = select_representatives(evidences, limit=cfg["final_keep"])
     progress.metrics([("精査件数", len(evidences)), ("採用根拠", len(selected)), ("高速最終候補", cfg["final_keep"])])
 
-    progress.set_flow_step("論点設計", "重複しにくい段落設計を作っています。")
-    argument_map = build_argument_map(client, model, theme, selected, points=4)
+    progress.set_flow_step("論点設計", "論点マップを作っています。")
+    argument_map = build_argument_map(client, model, theme, selected, points=3)
 
-    progress.set_flow_step("本文生成", "段落ごとに本文を生成しています。")
-    draft = generate_single_pass_report(
-        client=client,
-        model=model,
-        theme=theme,
-        target_length=target_length,
-        argument_map=argument_map,
-        evidences=selected,
-        style_mode=style_mode,
-        abstraction_mode=abstraction_mode,
-    )
+    progress.set_flow_step("本文生成", "本文を組み立てています。")
+    report = generate_single_pass_report(client, model, theme, target_length, argument_map, selected, style_mode, abstraction_mode)
 
-    progress.set_flow_step("字数補正", "字数と資料概念の不足を整えています。")
-    report, critique = finalize_report(
-        client=client,
-        model=model,
-        theme=theme,
-        report=draft,
-        evidences=selected,
-        target_length=target_length,
-        style_mode=style_mode,
-    )
-
-    strict_bounds = build_length_targets(target_length, strict=True)
-    final_len = len(report)
-    if final_len < strict_bounds["min"]:
-        raise ValueError(
-            f"指定字数を満たせませんでした。現在 {final_len} 字、必要最低 {strict_bounds['min']} 字です。"
-        )
-
-    progress.set_flow_step("重複整理", "意味重複を最終確認しています。")
-    report = dedupe_report_semantically(client, model, theme, report, selected)
-    report = ensure_complete_text(client, model, theme, report, selected)
+    progress.set_flow_step("字数補正", "文字数と資料語の不足を整えています。")
+    report, critique = finalize_report(client, model, theme, report, selected, target_length, style_mode)
 
     progress.finish("生成が完了しました。")
     return {
-        "report": report,
-        "draft": draft,
-        "argument_map": argument_map,
+        "mode": "高速",
+        "chunks": chunks,
         "selected_evidences": selected,
+        "argument_map": argument_map,
+        "report": report,
         "critique": critique,
-        "char_count": len(report),
     }
 
 # ============================================================
-# 14. UI
+# 14. UI入力 / 実行
 # ============================================================
-def get_user_id() -> str:
-    if "rf_user_id" not in st.session_state:
-        st.session_state["rf_user_id"] = "friend"
-    return st.session_state["rf_user_id"]
+for key, default in {"result": None}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
+left, right = st.columns([1.18, 0.82], gap="large")
 
-st.sidebar.markdown("---")
-st.sidebar.caption(f"1日あたり上限: {MAX_DAILY_RUNS} 回")
-used_today = get_usage_count(get_user_id())
-st.sidebar.caption(f"本日の使用回数: {used_today} / {MAX_DAILY_RUNS}")
-
-with st.form("report_form"):
+with left:
+    st.subheader("入力")
+    user_id = st.text_input("識別名（ニックネームでOK）", placeholder="例：yuya / tanaka / a123")
+    uploaded_files = st.file_uploader("PDFを複数アップロード", type=["pdf"], accept_multiple_files=True)
     theme = st.text_area(
-        "課題文",
-        height=160,
-        placeholder="例：科学技術の発展がマーケティングチャネルの構造と機能にどのような変化をもたらしたか、講義資料に基づいて論じなさい。",
+        "課題文 / テーマ",
+        placeholder="例：科学技術の発展がマーケティング・チャネル設計に与えた影響を、ディスインターメディエーションと電子市場を中心に論じなさい。",
+        height=130,
+    )
+    focus_points = st.text_input("特に重視したい観点（任意）", placeholder="例：チャネル設計、ディスインターメディエーション、チャネル・コンフリクト")
+    preferred_concepts = st.text_input("扱いたい概念（任意）", placeholder="例：電子市場、垂直型システム、EDI、リテール・リンク")
+    excluded_topics = st.text_input("除外したい話題（任意）", placeholder="例：ブランド価値、感情分析、新製品開発")
+    source_scope = st.text_input("使う範囲・章指定（任意）", placeholder="例：7章中心、7マーケティング・チャネル p.11〜38 を優先")
+    target_length = st.number_input(
+        "目標文字数",
+        min_value=300,
+        max_value=MAX_TARGET_CHARS,
+        value=min(2000, MAX_TARGET_CHARS),
+        step=100,
+        help=f"このテスト版では {MAX_TARGET_CHARS} 字までです。",
     )
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        target_length = st.number_input(
-            "目標文字数",
-            min_value=400,
-            max_value=MAX_TARGET_CHARS,
-            value=min(2000, MAX_TARGET_CHARS),
-            step=100,
-        )
-    with col2:
-        style_mode = st.selectbox("文体", ["標準", "やや硬め", "やや柔らかめ"], index=0)
-    with col3:
-        abstraction_mode = st.selectbox("抽象度", ["標準", "抽象度高め", "抽象度低め"], index=0)
+with right:
+    st.subheader("設定")
+    st.info("この版は友人テスト用のため、高速版のみです。")
+    style_mode = st.selectbox("文体", ["標準", "やや硬め", "やや柔らかめ"], index=0)
+    abstraction_mode = st.selectbox("抽象度", ["標準", "抽象度高め", "抽象度低め"], index=0)
+    used_today = get_usage_count(user_id) if user_id.strip() else 0
+    st.metric("本日の利用回数", f"{used_today}/{MAX_DAILY_RUNS}")
+    st.caption(f"PDFは {MAX_PDFS} 個まで / 1ファイル {MAX_FILE_MB}MB まで")
 
-    uploaded_files = st.file_uploader(
-        f"講義PDF（最大 {MAX_PDFS} 個 / 各 {MAX_FILE_MB}MB まで）",
-        type=["pdf"],
-        accept_multiple_files=True,
-    )
+max_pdfs = MAX_PDFS
+max_file_mb = MAX_FILE_MB
+if uploaded_files and len(uploaded_files) > max_pdfs:
+    st.error(f"PDFは {max_pdfs} 個までです。")
+    st.stop()
 
-    submitted = st.form_submit_button("生成する", use_container_width=True)
-
-st.markdown('<div class="small-muted">資料固有の概念を優先しつつ、重複を抑えた本文を目指します。</div>', unsafe_allow_html=True)
-
-if submitted:
-    if not theme.strip():
-        st.error("課題文を入力してください。")
-        st.stop()
-
-    if not uploaded_files:
-        st.error("PDFを1つ以上アップロードしてください。")
-        st.stop()
-
-    if len(uploaded_files) > MAX_PDFS:
-        st.error(f"PDFは最大 {MAX_PDFS} 個までです。")
-        st.stop()
-
+if uploaded_files:
     for f in uploaded_files:
-        size_mb = len(f.getvalue()) / (1024 * 1024)
-        if size_mb > MAX_FILE_MB:
-            st.error(f"{f.name} は {MAX_FILE_MB}MB を超えています。")
+        size_mb = f.size / (1024 * 1024)
+        if size_mb > max_file_mb:
+            st.error(f"{f.name} は {max_file_mb}MB を超えています。")
             st.stop()
 
-    ok, new_count = check_and_increment_usage(get_user_id(), MAX_DAILY_RUNS)
-    if not ok:
-        st.error(f"本日の利用上限（{MAX_DAILY_RUNS}回）に達しました。")
+confirm_generate = st.checkbox("この設定で本当に生成する", value=False)
+generate_clicked = st.button("生成する", use_container_width=True, type="primary")
+
+
+def build_user_guidance(theme: str, focus_points: str, preferred_concepts: str, excluded_topics: str, source_scope: str) -> str:
+    parts = [f"課題文: {theme.strip()}"]
+    if focus_points.strip():
+        parts.append(f"重視観点: {focus_points.strip()}")
+    if preferred_concepts.strip():
+        parts.append(f"扱いたい概念: {preferred_concepts.strip()}")
+    if excluded_topics.strip():
+        parts.append(f"除外したい話題: {excluded_topics.strip()}")
+    if source_scope.strip():
+        parts.append(f"優先範囲: {source_scope.strip()}")
+    return "\n".join(parts)
+
+
+def validate_inputs(user_id_value: str, uploaded, theme_text: str, confirm_flag: bool) -> None:
+    if not confirm_flag:
+        st.warning("生成前にチェックを入れてください。")
+        st.stop()
+    if not user_id_value.strip():
+        st.error("識別名を入力してください。")
+        st.stop()
+    if not uploaded:
+        st.error("PDFを1つ以上アップロードしてください。")
+        st.stop()
+    if not theme_text.strip():
+        st.error("課題文またはテーマを入力してください。")
         st.stop()
 
-    progress = ProgressUI()
+
+if generate_clicked:
+    validate_inputs(user_id, uploaded_files, theme, confirm_generate)
+    ok, used = check_and_increment_usage(user_id.strip(), daily_limit=MAX_DAILY_RUNS)
+    if not ok:
+        st.error("本日の利用上限に達しました。")
+        st.stop()
+
+    client = get_client()
+    effective_theme = build_user_guidance(theme, focus_points, preferred_concepts, excluded_topics, source_scope)
+    progress_ui = ProgressUI()
+
     try:
-        client = get_client()
         result = run_fast_pipeline(
-            client=client,
-            model=MODEL_NAME,
-            theme=theme.strip(),
-            uploaded_files=uploaded_files,
-            target_length=int(target_length),
-            style_mode=style_mode,
-            abstraction_mode=abstraction_mode,
-            progress=progress,
+            client,
+            MODEL_NAME,
+            effective_theme,
+            uploaded_files,
+            int(target_length),
+            style_mode,
+            abstraction_mode,
+            progress_ui,
+        )
+        result["effective_theme"] = effective_theme
+        result["used_today"] = used
+        st.session_state.result = result
+        st.success("生成が完了しました。")
+    except Exception as e:
+        st.exception(e)
+        st.stop()
+
+# ============================================================
+# 15. 出力表示
+# ============================================================
+if st.session_state.result:
+    result = st.session_state.result
+    report = result["report"]
+    selected = result["selected_evidences"]
+    critique = result["critique"]
+
+    tab1, tab2, tab3, tab4 = st.tabs(["最終レポート", "採用根拠", "論点設計", "内部評価"])
+
+    with tab1:
+        st.subheader("生成結果")
+        st.text_area("レポート本文", report, height=520)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("モード", result.get("mode", ""))
+        m2.metric("最終文字数", len(report))
+        m3.metric("採用根拠数", len(selected))
+        m4.metric("品質スコア", int(critique.get("overall_score", 0)))
+        st.download_button(
+            "本文をテキスト保存",
+            data=report,
+            file_name="reportflow_report.txt",
+            mime="text/plain",
+            use_container_width=True,
         )
 
-        st.markdown("---")
-        st.subheader("生成結果")
-        st.caption(f"文字数: {result['char_count']} 字")
-        st.text_area("レポート本文", value=result["report"], height=520)
+    with tab2:
+        st.subheader("採用された根拠")
+        for ev in selected:
+            title = f"{int(ev.final_score)}点 | {ev.file} p.{ev.page} | {ev.reason}"
+            with st.expander(title):
+                st.write(f"chunk_id: {ev.chunk_id}")
+                st.write(f"blocks: {ev.block_range}")
+                st.write(f"topic: {ev.topic}")
+                st.write(f"proposition: {ev.proposition}")
+                st.write(f"evidence: {ev.evidence}")
+                st.write(f"example: {ev.example}")
+                st.write(f"terminology: {', '.join(ev.terminology)}")
+                st.write(f"contrast: {ev.contrast}")
+                st.write(f"cause_effect: {ev.cause_effect}")
+                st.write(f"role: {ev.role}")
+                st.write(f"assignment_relevance: {ev.assignment_relevance}")
+                st.caption(ev.text[:1800])
 
-        with st.expander("論点設計JSON"):
-            st.json(result["argument_map"])
+    with tab3:
+        st.subheader("論点設計")
+        if result.get("effective_theme"):
+            st.text_area("実際に使ったテーマ解釈", result.get("effective_theme", ""), height=140)
+        st.text_area("argument_map", result.get("argument_map", ""), height=260)
 
-        with st.expander("採用根拠"):
-            for ev in result["selected_evidences"]:
-                st.markdown(f"**{ev.file} p.{ev.page} / {ev.chunk_id}**")
-                st.write(f"- topic: {ev.topic}")
-                st.write(f"- proposition: {ev.proposition}")
-                st.write(f"- evidence: {ev.evidence}")
-                st.write(f"- example: {ev.example}")
-                st.write(f"- terminology: {', '.join(ev.terminology)}")
-                st.write(f"- final_score: {ev.final_score}")
-                st.markdown("---")
-
-        with st.expander("批評"):
-            st.json(result["critique"])
-
-        st.success(f"実行回数を記録しました（本日 {new_count}/{MAX_DAILY_RUNS} 回）。")
-
-    except Exception as e:
-        st.error(f"エラーが発生しました: {e}")
+    with tab4:
+        st.subheader("内部評価")
+        st.json(critique)
+        with st.expander("重要概念候補"):
+            st.write(", ".join(important_terms_from_evidences(selected, top_k=16)))
